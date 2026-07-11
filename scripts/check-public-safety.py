@@ -5,7 +5,7 @@ import re
 import stat
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 FORBIDDEN_BASENAMES = {
@@ -87,13 +87,13 @@ def https_url_rules(contents):
             continue
         if parsed.username is not None or parsed.password is not None:
             rules.add("url-credentials")
-        path_parts = tuple(part for part in parsed.path.split("/") if part)
+        decoded_path = unquote(parsed.path)
+        path_parts = tuple(part for part in decoded_path.split("/") if part)
+        normalized_hostname = unquote(parsed.hostname or "").lower().rstrip(".")
         is_github_repository = (
-            parsed.hostname is not None
-            and parsed.hostname.lower() == "github.com"
-            and len(path_parts) == 2
+            normalized_hostname == "github.com" and len(path_parts) == 2
         )
-        is_git_remote = parsed.path.rstrip("/").endswith(".git") or is_github_repository
+        is_git_remote = decoded_path.rstrip("/").endswith(".git") or is_github_repository
         is_quoted = (
             contents[match.start() - 1 : match.start()] in (b"'", b'"')
             or contents[match.end() : match.end() + 1] in (b"'", b'"')
@@ -117,8 +117,15 @@ def text_rules(contents):
 
 def scan(root):
     violations = set()
-    root = root.resolve()
-    if not root.is_dir():
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError:
+        print(".: unreadable-root")
+        return 1
+    if stat.S_ISLNK(root_mode):
+        print(".: symlink-root")
+        return 1
+    if not stat.S_ISDIR(root_mode):
         print(".: unreadable-root")
         return 1
 
@@ -131,8 +138,8 @@ def scan(root):
             if not error_path.is_absolute():
                 error_path = root / error_path
             try:
-                relative_path = error_path.resolve().relative_to(root)
-            except (OSError, RuntimeError, ValueError):
+                relative_path = error_path.relative_to(root)
+            except ValueError:
                 relative_path = Path(".")
         violations.add((str(relative_path), "unreadable-directory"))
 
@@ -142,8 +149,6 @@ def scan(root):
         directory_path = Path(directory)
         retained_directories = []
         for name in sorted(directory_names):
-            if name in {".git", ".DS_Store"} or (directory_path == root and name == "tests"):
-                continue
             path = directory_path / name
             relative_path = path.relative_to(root)
             try:
@@ -156,11 +161,11 @@ def scan(root):
             except OSError:
                 violations.add((str(relative_path), "unreadable-path"))
                 continue
+            if name in {".git", ".DS_Store"} or (directory_path == root and name == "tests"):
+                continue
             retained_directories.append(name)
         directory_names[:] = retained_directories
         for name in sorted(file_names):
-            if name == ".DS_Store":
-                continue
             path = directory_path / name
             try:
                 relative_path = path.relative_to(root)
@@ -171,7 +176,7 @@ def scan(root):
                         for rule in path_rules(relative_path) | {"symlink"}
                     )
                     continue
-                if not stat.S_ISREG(mode):
+                if name == ".DS_Store" or not stat.S_ISREG(mode):
                     continue
             except (OSError, ValueError):
                 relative_path = path.relative_to(root) if path.is_absolute() else path

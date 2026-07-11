@@ -119,6 +119,31 @@ class PublicSafetyScannerTests(unittest.TestCase):
             "file-link: symlink\n",
         )
 
+    def test_rejects_symlinked_scanner_root_without_following_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (outside / "dot_env").write_text("synthetic env")
+            root.symlink_to(outside, target_is_directory=True)
+            code, output = scan_output_from_root(root)
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, ".: symlink-root\n")
+
+    def test_rejects_ds_store_source_symlink_without_following_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (outside / "dot_env").write_text("synthetic env")
+            (root / ".DS_Store").symlink_to(outside, target_is_directory=True)
+            code, output = scan_output_from_root(root)
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, ".DS_Store: symlink\n")
+
     def test_rejects_openai_style_credential(self):
         self.assertNotEqual(run_scan({"dot_example": "token = " + "sk-" + ("a" * 26)}), 0)
 
@@ -175,6 +200,20 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_https_git_remote_without_git_suffix(self):
         code, output = scan_output(
             {"dot_example": "remote = https://github.com/private/repo"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_https_git_remote_with_percent_encoded_git_suffix(self):
+        code, output = scan_output(
+            {"dot_example": "remote = https://gitlab.com/group/repo%2Egit"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_https_git_remote_with_trailing_dot_github_host(self):
+        code, output = scan_output(
+            {"dot_example": "remote = https://github.com./owner/repo"}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
