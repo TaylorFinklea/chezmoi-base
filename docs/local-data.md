@@ -73,7 +73,7 @@ Use direct applies only to validate a composition against temporary paths. Creat
   CHEZMOI_DESTINATION="$personal_destination" CHEZMOI_STATE_ROOT="$personal_state" "$HOME/git/chezmoi-base/scripts/chezmoi-compose" preflight personal
   CHEZMOI_DESTINATION="$personal_destination" CHEZMOI_STATE_ROOT="$personal_state" "$HOME/git/chezmoi-base/scripts/chezmoi-compose" diff personal
   chezmoi --source "$HOME/git/chezmoi-base" --config "$HOME/.config/chezmoi-compose/base.toml" --persistent-state "$personal_state/base.boltdb" --destination "$personal_destination" apply
-  chezmoi --source "$HOME/git/chezmoi-config" --config "$HOME/.config/chezmoi-compose/personal.toml" --persistent-state "$personal_state/personal.boltdb" --destination "$personal_destination" apply
+  chezmoi --source "$HOME/git/chezmoi-personal" --config "$HOME/.config/chezmoi-compose/personal.toml" --persistent-state "$personal_state/personal.boltdb" --destination "$personal_destination" apply
   CHEZMOI_DESTINATION="$personal_destination" CHEZMOI_STATE_ROOT="$personal_state" "$HOME/git/chezmoi-base/scripts/chezmoi-compose" verify personal
 )
 ```

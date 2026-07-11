@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_SOURCE="${CHEZMOI_BASE_SOURCE:-$HOME/git/chezmoi-base}"
-PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE:-$HOME/git/chezmoi-config}"
+PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE:-$HOME/git/chezmoi-personal}"
 WORK_SOURCE="${CHEZMOI_WORK_SOURCE:-$HOME/git/chezmoi-work}"
 CONFIG_ROOT="${CHEZMOI_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-compose}"
 STATE_ROOT="${CHEZMOI_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/chezmoi-compose}"

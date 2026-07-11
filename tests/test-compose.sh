@@ -14,6 +14,10 @@ fail() {
   exit 1
 }
 
+if ! grep -Fqx 'PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE:-$HOME/git/chezmoi-personal}"' "$runner"; then
+  fail 'personal source default is not chezmoi-personal'
+fi
+
 run_compose() {
   export CHEZMOI_BASE_SOURCE="$tmp/base"
   export CHEZMOI_PERSONAL_SOURCE="$tmp/personal"
