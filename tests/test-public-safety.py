@@ -259,7 +259,8 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertEqual(
             output,
             "dot_port: git-remote\n"
-            "dot_userinfo: git-remote\n",
+            "dot_userinfo: git-remote\n"
+            "dot_userinfo: url-credentials\n",
         )
 
     def test_rejects_canonical_https_git_remote_with_non_ascii_decoration(self):
@@ -410,6 +411,21 @@ class PublicSafetyScannerTests(unittest.TestCase):
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: url-credentials\n")
+
+    def test_rejects_embedded_https_url_credentials_with_non_ascii_documentation_url(self):
+        code, output = scan_output(
+            {
+                "dot_example": (
+                    "docs = https://user:password@docs.example.com/guide?title=Résumé"
+                )
+            }
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(
+            output,
+            "dot_example: private-email\n"
+            "dot_example: url-credentials\n",
+        )
 
     def test_accepts_ordinary_https_documentation_url(self):
         self.assertEqual(

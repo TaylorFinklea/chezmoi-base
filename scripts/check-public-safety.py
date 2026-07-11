@@ -146,11 +146,26 @@ def is_non_ascii_https_git_remote(candidate):
     )
 
 
+def has_https_url_credentials(candidate):
+    remainder = candidate[len(b"https://") :]
+    authority_end = min(
+        (
+            index
+            for separator in (b"/", b"?", b"#")
+            if (index := remainder.find(separator)) != -1
+        ),
+        default=len(remainder),
+    )
+    return b"@" in remainder[:authority_end]
+
+
 def https_url_rules(contents):
     rules = set()
     for match in HTTPS_URL_PATTERN.finditer(contents):
         raw_candidate = match.group()
         candidate = raw_candidate.rstrip(b".,;:!?)]}")
+        if has_https_url_credentials(candidate):
+            rules.add("url-credentials")
         allowed_remote = ALLOWED_HTTPS_GIT_REMOTE.encode()
         is_delimited = (
             contents[match.start() - 1 : match.start()] in (b"'", b'"', b"<")
