@@ -89,6 +89,11 @@ class PublicSafetyScannerTests(unittest.TestCase):
                 self.assertIsNone(SCANNER.decode_target_component(source_name))
                 self.assertEqual(SCANNER.path_rules(Path(source_name)), set())
 
+    def test_ignore_source_state_has_no_managed_target(self):
+        self.assertIsNone(SCANNER.decode_target_component("ignore_dot_hermes"))
+        self.assertEqual(SCANNER.path_rules(Path("ignore_dot_hermes")), set())
+        self.assertEqual(run_scan({"ignore_dot_hermes": "synthetic ignore source"}), 0)
+
     def test_rejects_decoded_forbidden_env_target_names(self):
         code, output = scan_output(
             {
@@ -114,6 +119,20 @@ class PublicSafetyScannerTests(unittest.TestCase):
         code, output = scan_output({"empty_dot_env": "synthetic env"})
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "empty_dot_env: sensitive-basename\n")
+
+    def test_rejects_ignore_source_state_symlink_without_target_violation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (root / "ignore_dot_hermes").symlink_to(
+                outside, target_is_directory=True
+            )
+            code, output = scan_output_from_root(root)
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "ignore_dot_hermes: symlink\n")
 
     def test_rejects_source_symlinks_without_following_targets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -320,6 +339,33 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_https_git_remote_without_git_suffix(self):
         code, output = scan_output(
             {"dot_example": "remote = https://github.com/private/repo"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_standard_forge_https_git_remotes_without_git_suffix(self):
+        code, output = scan_output(
+            {
+                "dot_bitbucket": "remote = https://bitbucket.org/workspace/repo",
+                "dot_codeberg": "remote = https://codeberg.org/owner/repo",
+                "dot_gitlab": "remote = https://gitlab.com/group/repo",
+                "dot_nested_gitlab": (
+                    "remote = https://gitlab.com/group/subgroup/repo"
+                ),
+            }
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(
+            output,
+            "dot_bitbucket: git-remote\n"
+            "dot_codeberg: git-remote\n"
+            "dot_gitlab: git-remote\n"
+            "dot_nested_gitlab: git-remote\n",
+        )
+
+    def test_rejects_fullwidth_github_host_without_git_suffix(self):
+        code, output = scan_output(
+            {"dot_example": "remote = https://Ｇｉｔｈｕｂ．ｃｏｍ/owner/repo"}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")

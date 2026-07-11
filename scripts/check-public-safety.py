@@ -5,6 +5,7 @@ import posixpath
 import re
 import stat
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
@@ -34,7 +35,12 @@ TEXT_PATTERNS = (
 )
 HTTPS_URL_PATTERN = re.compile(rb"(?i)(?<![A-Za-z0-9])https://[^\s<>\"']+")
 ALLOWED_HTTPS_GIT_REMOTE = "https://github.com/TaylorFinklea/chezmoi-base.git"
-GITHUB_HOSTNAME = "github.com"
+FORGE_REPOSITORY_PATH_LENGTHS = {
+    "github.com": (2, 2),
+    "gitlab.com": (2, None),
+    "bitbucket.org": (2, 2),
+    "codeberg.org": (2, 2),
+}
 FORGE_HOST_DOT_EQUIVALENTS = str.maketrans({"。": ".", "．": ".", "｡": "."})
 CHEZMOI_TARGET_ATTRIBUTE_PREFIXES = (
     "private_",
@@ -54,6 +60,7 @@ CHEZMOI_SCRIPT_STATE_PREFIXES = (
     "onchange_",
     "before_",
     "after_",
+    "ignore_",
 )
 
 
@@ -89,19 +96,28 @@ def path_rules(relative_path):
 
 
 def normalize_forge_hostname(hostname):
-    return (
-        unquote(hostname)
+    normalized = (
+        unicodedata.normalize("NFKC", unquote(hostname))
         .translate(FORGE_HOST_DOT_EQUIVALENTS)
-        .lower()
+        .casefold()
         .rstrip(".")
-        .removeprefix("www.")
     )
+    try:
+        return normalized.encode("idna").decode("ascii").removeprefix("www.")
+    except UnicodeError:
+        return None
 
 
-def is_github_repository(hostname, path):
+def is_forge_repository(hostname, path):
+    path_lengths = FORGE_REPOSITORY_PATH_LENGTHS.get(
+        normalize_forge_hostname(hostname)
+    )
+    if path_lengths is None:
+        return False
+    minimum, maximum = path_lengths
     normalized_path = posixpath.normpath(path)
     path_parts = tuple(part for part in normalized_path.split("/") if part)
-    return normalize_forge_hostname(hostname) == GITHUB_HOSTNAME and len(path_parts) == 2
+    return len(path_parts) >= minimum and (maximum is None or len(path_parts) <= maximum)
 
 
 def is_non_ascii_https_git_remote(candidate):
@@ -122,11 +138,11 @@ def is_non_ascii_https_git_remote(candidate):
         hostname = hostname_with_port.partition(b":")[0].decode("utf-8")
     except UnicodeDecodeError:
         hostname = ""
-    is_github_url = is_github_repository(
+    is_forge_url = is_forge_repository(
         hostname, decoded_path.decode("utf-8", "ignore")
     )
     return any(byte > 127 for byte in candidate) and (
-        decoded_path.rstrip(b"/").endswith(b".git") or is_github_url
+        decoded_path.rstrip(b"/").endswith(b".git") or is_forge_url
     )
 
 
@@ -155,8 +171,8 @@ def https_url_rules(contents):
         if parsed.username is not None or parsed.password is not None:
             rules.add("url-credentials")
         decoded_path = unquote(parsed.path)
-        is_github_url = is_github_repository(parsed.hostname or "", decoded_path)
-        is_git_remote = decoded_path.rstrip("/").endswith(".git") or is_github_url
+        is_forge_url = is_forge_repository(parsed.hostname or "", decoded_path)
+        is_git_remote = decoded_path.rstrip("/").endswith(".git") or is_forge_url
         if is_git_remote and not is_allowed_remote:
             rules.add("git-remote")
     return rules
