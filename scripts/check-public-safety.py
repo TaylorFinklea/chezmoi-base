@@ -34,7 +34,9 @@ TEXT_PATTERNS = (
 )
 HTTPS_URL_PATTERN = re.compile(rb"(?i)(?<![A-Za-z0-9])https://[^\s<>\"']+")
 ALLOWED_HTTPS_GIT_REMOTE = "https://github.com/TaylorFinklea/chezmoi-base.git"
-CHEZMOI_ATTRIBUTE_PREFIXES = (
+GITHUB_HOSTNAME = "github.com"
+FORGE_HOST_DOT_EQUIVALENTS = str.maketrans({"。": ".", "．": ".", "｡": "."})
+CHEZMOI_TARGET_ATTRIBUTE_PREFIXES = (
     "private_",
     "executable_",
     "readonly_",
@@ -43,12 +45,15 @@ CHEZMOI_ATTRIBUTE_PREFIXES = (
     "create_",
     "modify_",
     "remove_",
-    "run_",
-    "once_",
-    "before_",
-    "after_",
     "symlink_",
     "empty_",
+)
+CHEZMOI_SCRIPT_STATE_PREFIXES = (
+    "run_",
+    "once_",
+    "onchange_",
+    "before_",
+    "after_",
 )
 
 
@@ -56,7 +61,9 @@ def decode_target_component(component):
     while True:
         if component.startswith("literal_"):
             return component[len("literal_") :].removesuffix(".tmpl")
-        for prefix in CHEZMOI_ATTRIBUTE_PREFIXES:
+        if component.startswith(CHEZMOI_SCRIPT_STATE_PREFIXES):
+            return None
+        for prefix in CHEZMOI_TARGET_ATTRIBUTE_PREFIXES:
             if component.startswith(prefix):
                 component = component[len(prefix) :]
                 break
@@ -68,13 +75,33 @@ def decode_target_component(component):
 
 def path_rules(relative_path):
     rules = set()
-    decoded_parts = tuple(decode_target_component(component) for component in relative_path.parts)
+    decoded_parts = tuple(
+        decode_target_component(component) for component in relative_path.parts
+    )
+    if None in decoded_parts:
+        return rules
     for component in decoded_parts:
         if component == ".hermes" or component.endswith("_dot_hermes"):
             rules.add("hermes-path")
     if decoded_parts and decoded_parts[-1] in FORBIDDEN_BASENAMES:
         rules.add("sensitive-basename")
     return rules
+
+
+def normalize_forge_hostname(hostname):
+    return (
+        unquote(hostname)
+        .translate(FORGE_HOST_DOT_EQUIVALENTS)
+        .lower()
+        .rstrip(".")
+        .removeprefix("www.")
+    )
+
+
+def is_github_repository(hostname, path):
+    normalized_path = posixpath.normpath(path)
+    path_parts = tuple(part for part in normalized_path.split("/") if part)
+    return normalize_forge_hostname(hostname) == GITHUB_HOSTNAME and len(path_parts) == 2
 
 
 def is_non_ascii_https_git_remote(candidate):
@@ -90,15 +117,16 @@ def is_non_ascii_https_git_remote(candidate):
     authority = remainder[:path_start]
     path = remainder[path_start:].split(b"?", 1)[0].split(b"#", 1)[0]
     decoded_path = unquote_to_bytes(path)
-    normalized_path = posixpath.normpath(decoded_path)
-    path_parts = tuple(part for part in normalized_path.split(b"/") if part)
     hostname_with_port = unquote_to_bytes(authority).rsplit(b"@", 1)[-1]
-    normalized_hostname = hostname_with_port.partition(b":")[0].lower().rstrip(b".")
-    is_github_repository = (
-        normalized_hostname == b"github.com" and len(path_parts) == 2
+    try:
+        hostname = hostname_with_port.partition(b":")[0].decode("utf-8")
+    except UnicodeDecodeError:
+        hostname = ""
+    is_github_url = is_github_repository(
+        hostname, decoded_path.decode("utf-8", "ignore")
     )
     return any(byte > 127 for byte in candidate) and (
-        decoded_path.rstrip(b"/").endswith(b".git") or is_github_repository
+        decoded_path.rstrip(b"/").endswith(b".git") or is_github_url
     )
 
 
@@ -127,13 +155,8 @@ def https_url_rules(contents):
         if parsed.username is not None or parsed.password is not None:
             rules.add("url-credentials")
         decoded_path = unquote(parsed.path)
-        normalized_path = posixpath.normpath(decoded_path)
-        path_parts = tuple(part for part in normalized_path.split("/") if part)
-        normalized_hostname = unquote(parsed.hostname or "").lower().rstrip(".")
-        is_github_repository = (
-            normalized_hostname == "github.com" and len(path_parts) == 2
-        )
-        is_git_remote = decoded_path.rstrip("/").endswith(".git") or is_github_repository
+        is_github_url = is_github_repository(parsed.hostname or "", decoded_path)
+        is_git_remote = decoded_path.rstrip("/").endswith(".git") or is_github_url
         if is_git_remote and not is_allowed_remote:
             rules.add("git-remote")
     return rules

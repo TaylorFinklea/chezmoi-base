@@ -73,6 +73,22 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_hermes_path(self):
         self.assertNotEqual(run_scan({"private_dot_hermes/config.yaml": "x"}), 0)
 
+    def test_distinguishes_target_bearing_and_no_target_source_states(self):
+        self.assertEqual(SCANNER.decode_target_component("private_dot_env"), ".env")
+        self.assertEqual(
+            SCANNER.path_rules(Path("private_dot_env")), {"sensitive-basename"}
+        )
+        for source_name in (
+            "run_dot_env",
+            "once_dot_env",
+            "onchange_dot_env",
+            "before_dot_env",
+            "after_dot_env",
+        ):
+            with self.subTest(source_name=source_name):
+                self.assertIsNone(SCANNER.decode_target_component(source_name))
+                self.assertEqual(SCANNER.path_rules(Path(source_name)), set())
+
     def test_rejects_decoded_forbidden_env_target_names(self):
         code, output = scan_output(
             {
@@ -314,6 +330,26 @@ class PublicSafetyScannerTests(unittest.TestCase):
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_normalized_github_hosts_without_git_suffix(self):
+        code, output = scan_output(
+            {
+                "dot_fullwidth": "remote = https://github。com/owner/repo",
+                "dot_www": "remote = https://www.github.com/owner/repo",
+            }
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(
+            output,
+            "dot_fullwidth: git-remote\n"
+            "dot_www: git-remote\n",
+        )
+
+    def test_accepts_ordinary_https_documentation_url_with_repository_like_path(self):
+        self.assertEqual(
+            run_scan({"dot_example": "docs = https://docs.example.com/owner/repo"}),
+            0,
+        )
 
     def test_rejects_https_git_remote_with_trailing_dot_github_host(self):
         code, output = scan_output(
