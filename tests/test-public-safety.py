@@ -89,6 +89,11 @@ class PublicSafetyScannerTests(unittest.TestCase):
             "symlink_dot_hermes: hermes-path\n",
         )
 
+    def test_rejects_template_suffix_forbidden_env_target(self):
+        code, output = scan_output({"dot_env.tmpl": "synthetic env template"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_env.tmpl: sensitive-basename\n")
+
     def test_rejects_source_symlinks_without_following_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "root"
@@ -144,6 +149,13 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_noncanonical_https_git_remote(self):
         code, output = scan_output(
             {"dot_example": "remote = https://github.com/private/repo.git"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_single_quoted_noncanonical_https_git_remote(self):
+        code, output = scan_output(
+            {"dot_example": "remote = 'https://github.com/private/repo.git'"}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")

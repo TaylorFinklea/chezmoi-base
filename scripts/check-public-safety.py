@@ -31,7 +31,7 @@ TEXT_PATTERNS = (
     ("git-remote", re.compile(rb"git@")),
     ("ssh-url", re.compile(rb"ssh://")),
 )
-HTTPS_URL_PATTERN = re.compile(rb"(?i)(?<![A-Za-z0-9])https://[^\s<>\"]+")
+HTTPS_URL_PATTERN = re.compile(rb"(?i)(?<![A-Za-z0-9])https://[^\s<>\"']+")
 ALLOWED_HTTPS_GIT_REMOTE = "https://github.com/TaylorFinklea/chezmoi-base.git"
 CHEZMOI_ATTRIBUTE_PREFIXES = (
     "private_",
@@ -53,15 +53,15 @@ CHEZMOI_ATTRIBUTE_PREFIXES = (
 def decode_target_component(component):
     while True:
         if component.startswith("literal_"):
-            return component[len("literal_") :]
+            return component[len("literal_") :].removesuffix(".tmpl")
         for prefix in CHEZMOI_ATTRIBUTE_PREFIXES:
             if component.startswith(prefix):
                 component = component[len(prefix) :]
                 break
         else:
             if component.startswith("dot_"):
-                return "." + component[len("dot_") :]
-            return component
+                return "." + component[len("dot_") :].removesuffix(".tmpl")
+            return component.removesuffix(".tmpl")
 
 
 def path_rules(relative_path):
