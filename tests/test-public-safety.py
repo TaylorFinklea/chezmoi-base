@@ -1,11 +1,32 @@
+import contextlib
+import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "check-public-safety.py"
+
+
+def load_scanner():
+    spec = importlib.util.spec_from_file_location("check_public_safety", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load public safety scanner")
+    scanner = importlib.util.module_from_spec(spec)
+    original_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(scanner)
+    finally:
+        sys.dont_write_bytecode = original_dont_write_bytecode
+    return scanner
+
+
+SCANNER = load_scanner()
 
 
 def run_scan(files):
@@ -57,32 +78,57 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_non_example_email(self):
         self.assertNotEqual(run_scan({"dot_example": "email = person@private.example"}), 0)
 
+    def test_accepts_example_addresses_followed_by_sentence_punctuation(self):
+        addresses = "\n".join(
+            f"email = person@{domain}{punctuation}"
+            for domain in ("example.com", "example.org", "example.net")
+            for punctuation in ".,;:!?"
+        )
+        self.assertEqual(run_scan({"dot_example": addresses}), 0)
+
     def test_rejects_git_remote(self):
         self.assertNotEqual(run_scan({"dot_example": "remote = git@github.com:private/repo.git"}), 0)
 
-    def test_reports_sensitive_basename_without_contents(self):
-        code, output = scan_output({"dot_config/auth.json": "synthetic credential"})
+    def test_reports_all_sensitive_basenames_without_contents(self):
+        contents = {
+            ".env": "synthetic-env-value",
+            "auth.json": "synthetic-auth-value",
+            "state.db": "synthetic-db-value",
+            "state.db-wal": "synthetic-wal-value",
+            "state.db-shm": "synthetic-shm-value",
+        }
+        code, output = scan_output(
+            {f"dot_config/{name}": value for name, value in contents.items()}
+        )
         self.assertNotEqual(code, 0)
-        self.assertEqual(output, "dot_config/auth.json: sensitive-basename\n")
+        self.assertEqual(
+            output,
+            "dot_config/.env: sensitive-basename\n"
+            "dot_config/auth.json: sensitive-basename\n"
+            "dot_config/state.db: sensitive-basename\n"
+            "dot_config/state.db-shm: sensitive-basename\n"
+            "dot_config/state.db-wal: sensitive-basename\n",
+        )
+        self.assertFalse(any(value in output for value in contents.values()))
 
     def test_reports_hermes_path_without_contents(self):
         code, output = scan_output({".hermes/config.yaml": "synthetic config"})
         self.assertNotEqual(code, 0)
         self.assertEqual(output, ".hermes/config.yaml: hermes-path\n")
 
-    def test_reports_remaining_credential_shapes_without_values(self):
-        code, output = scan_output(
-            {
-                "github-ghp": "ghp_" + ("a" * 20),
-                "github-gho": "gho_" + ("a" * 20),
-                "github-ghs": "ghs_" + ("a" * 20),
-                "github-ghu": "ghu_" + ("a" * 20),
-                "github-ghr": "ghr_" + ("a" * 20),
-                "slack": "xoxb-" + ("a" * 10),
-                "google": "AIza" + ("a" * 30),
-                "aws": "AKIA" + ("A" * 16),
-            }
-        )
+    def test_reports_all_credential_shapes_without_values(self):
+        credentials = {
+            "openai": "sk-" + ("a" * 26),
+            "github-ghp": "ghp_" + ("a" * 20),
+            "github-gho": "gho_" + ("a" * 20),
+            "github-ghs": "ghs_" + ("a" * 20),
+            "github-ghu": "ghu_" + ("a" * 20),
+            "github-ghr": "ghr_" + ("a" * 20),
+            "slack": "xoxb-" + ("a" * 10),
+            "google": "AIza" + ("a" * 30),
+            "aws": "AKIA" + ("A" * 16),
+        }
+        code, output = scan_output(credentials)
         self.assertNotEqual(code, 0)
         self.assertEqual(
             output,
@@ -93,8 +139,10 @@ class PublicSafetyScannerTests(unittest.TestCase):
             "github-ghs: github-credential\n"
             "github-ghu: github-credential\n"
             "google: google-credential\n"
+            "openai: openai-credential\n"
             "slack: slack-credential\n",
         )
+        self.assertFalse(any(value in output for value in credentials.values()))
 
     def test_reports_home_path_without_contents(self):
         code, output = scan_output({"dot_example": "path = /home/someone/private"})
@@ -116,12 +164,27 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_config/tests/auth.json: sensitive-basename\n")
 
-    def test_does_not_print_matched_credential_value(self):
-        secret = "sk-" + ("a" * 26)
-        code, output = scan_output({"dot_example": secret})
+    def test_rejects_unreadable_nested_directory_from_walker_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blocked_directory = root / "nested" / "blocked"
+            callback_invoked = False
+
+            def walk_with_error(walk_root, topdown=True, onerror=None, followlinks=False):
+                nonlocal callback_invoked
+                if onerror is not None:
+                    callback_invoked = True
+                    onerror(PermissionError(13, "Permission denied", str(blocked_directory)))
+                return iter(())
+
+            output = io.StringIO()
+            with mock.patch.object(SCANNER.os, "walk", walk_with_error):
+                with contextlib.redirect_stdout(output):
+                    code = SCANNER.scan(root)
+
+        self.assertTrue(callback_invoked)
         self.assertNotEqual(code, 0)
-        self.assertEqual(output, "dot_example: openai-credential\n")
-        self.assertNotIn(secret, output)
+        self.assertEqual(output.getvalue(), "nested/blocked: unreadable-directory\n")
 
 
 if __name__ == "__main__":

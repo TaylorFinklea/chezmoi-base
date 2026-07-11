@@ -48,7 +48,7 @@ def path_rules(relative_path):
 def text_rules(contents):
     rules = {name for name, pattern in CREDENTIAL_PATTERNS if pattern.search(contents)}
     for match in EMAIL_PATTERN.finditer(contents):
-        domain = match.group("domain").decode("ascii").lower()
+        domain = match.group("domain").rstrip(b".").decode("ascii").lower()
         if domain not in ALLOWED_EMAIL_DOMAINS:
             rules.add("private-email")
             break
@@ -63,7 +63,23 @@ def scan(root):
         print(".: unreadable-root")
         return 1
 
-    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+    def record_walk_error(error):
+        filename = getattr(error, "filename", None)
+        if filename is None:
+            relative_path = Path(".")
+        else:
+            error_path = Path(filename)
+            if not error_path.is_absolute():
+                error_path = root / error_path
+            try:
+                relative_path = error_path.resolve().relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                relative_path = Path(".")
+        violations.add((str(relative_path), "unreadable-directory"))
+
+    for directory, directory_names, file_names in os.walk(
+        root, topdown=True, onerror=record_walk_error, followlinks=False
+    ):
         directory_path = Path(directory)
         directory_names[:] = sorted(
             name
