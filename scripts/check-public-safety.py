@@ -296,7 +296,7 @@ def scan(root):
             except OSError:
                 violations.add((str(relative_path), "unreadable-path"))
                 continue
-            if name in {".git", ".DS_Store"} or (directory_path == root and name == "tests"):
+            if name in {".git", ".DS_Store"}:
                 continue
             retained_directories.append(name)
         directory_names[:] = retained_directories

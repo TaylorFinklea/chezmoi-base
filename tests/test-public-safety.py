@@ -29,6 +29,14 @@ def load_scanner():
 SCANNER = load_scanner()
 
 
+def https_url(value):
+    return "https" + "://" + value
+
+
+def remote_url(value):
+    return "remote = " + https_url(value)
+
+
 def run_scan(files):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -199,10 +207,14 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertNotEqual(run_scan({"dot_example": "token = " + "sk-" + ("a" * 26)}), 0)
 
     def test_rejects_private_user_path(self):
-        self.assertNotEqual(run_scan({"dot_example": "path = /Users/someone/private"}), 0)
+        self.assertNotEqual(
+            run_scan({"dot_example": "path = /" + "Users/someone/private"}), 0
+        )
 
     def test_rejects_non_example_email(self):
-        self.assertNotEqual(run_scan({"dot_example": "email = person@private.example"}), 0)
+        self.assertNotEqual(
+            run_scan({"dot_example": "email = person" + "@private.example"}), 0
+        )
 
     def test_accepts_example_addresses_followed_by_sentence_punctuation(self):
         addresses = "\n".join(
@@ -213,14 +225,17 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertEqual(run_scan({"dot_example": addresses}), 0)
 
     def test_rejects_git_remote(self):
-        self.assertNotEqual(run_scan({"dot_example": "remote = git@github.com:private/repo.git"}), 0)
+        self.assertNotEqual(
+            run_scan({"dot_example": "remote = git" + "@github.com:private/repo.git"}),
+            0,
+        )
 
     def test_accepts_canonical_https_git_remote(self):
         self.assertEqual(
             run_scan(
                 {
                     "dot_example": (
-                        "remote = https://github.com/TaylorFinklea/chezmoi-base.git"
+                        remote_url("github.com/TaylorFinklea/chezmoi-base.git")
                     )
                 }
             ),
@@ -230,8 +245,8 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_non_ascii_https_git_remotes(self):
         code, output = scan_output(
             {
-                "dot_non_ascii_host": "remote = https://gitföo.com/owner/repo.git",
-                "dot_non_ascii_path": "remote = https://github.com/owner/répo.git",
+                "dot_non_ascii_host": remote_url("gitföo.com/owner/repo.git"),
+                "dot_non_ascii_path": remote_url("github.com/owner/répo.git"),
             }
         )
         self.assertNotEqual(code, 0)
@@ -243,7 +258,7 @@ class PublicSafetyScannerTests(unittest.TestCase):
 
     def test_rejects_non_ascii_github_repository_without_git_suffix(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://github.com/private/répo"}
+            {"dot_example": remote_url("github.com/private/répo")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
@@ -251,8 +266,8 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_non_ascii_github_repository_with_port_or_empty_userinfo(self):
         code, output = scan_output(
             {
-                "dot_port": "remote = https://github.com:443/private/répo",
-                "dot_userinfo": "remote = https://@github.com/private/répo",
+                "dot_port": remote_url("github.com:443/private/répo"),
+                "dot_userinfo": remote_url("@github.com/private/répo"),
             }
         )
         self.assertNotEqual(code, 0)
@@ -267,10 +282,10 @@ class PublicSafetyScannerTests(unittest.TestCase):
         code, output = scan_output(
             {
                 "dot_fragment": (
-                    "remote = https://github.com/TaylorFinklea/chezmoi-base.git#é"
+                    remote_url("github.com/TaylorFinklea/chezmoi-base.git#é")
                 ),
                 "dot_query": (
-                    "remote = https://github.com/TaylorFinklea/chezmoi-base.git?x=é"
+                    remote_url("github.com/TaylorFinklea/chezmoi-base.git?x=é")
                 ),
             }
         )
@@ -283,63 +298,63 @@ class PublicSafetyScannerTests(unittest.TestCase):
 
     def test_rejects_canonical_https_git_remote_with_appended_path(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://github.com/TaylorFinklea/chezmoi-base.git/extra"}
+            {"dot_example": remote_url("github.com/TaylorFinklea/chezmoi-base.git/extra")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_canonical_https_git_remote_with_trailing_period(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://github.com/TaylorFinklea/chezmoi-base.git."}
+            {"dot_example": remote_url("github.com/TaylorFinklea/chezmoi-base.git.")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_double_quoted_canonical_https_git_remote(self):
         code, output = scan_output(
-            {"dot_example": 'remote = "https://github.com/TaylorFinklea/chezmoi-base.git"'}
+            {"dot_example": 'remote = "' + https_url("github.com/TaylorFinklea/chezmoi-base.git") + '"'}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_angle_bracketed_canonical_https_git_remote(self):
         code, output = scan_output(
-            {"dot_example": "remote = <https://github.com/TaylorFinklea/chezmoi-base.git>"}
+            {"dot_example": "remote = <" + https_url("github.com/TaylorFinklea/chezmoi-base.git") + ">"}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_github_url_with_percent_encoded_dot_segment(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://github.com/%2e/private/repo"}
+            {"dot_example": remote_url("github.com/%2e/private/repo")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_noncanonical_https_git_remote(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://github.com/private/repo.git"}
+            {"dot_example": remote_url("github.com/private/repo.git")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_single_quoted_noncanonical_https_git_remote(self):
         code, output = scan_output(
-            {"dot_example": "remote = 'https://github.com/private/repo.git'"}
+            {"dot_example": "remote = '" + https_url("github.com/private/repo.git") + "'"}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_single_quoted_canonical_https_git_remote(self):
         code, output = scan_output(
-            {"dot_example": "remote = 'https://github.com/TaylorFinklea/chezmoi-base.git'"}
+            {"dot_example": "remote = '" + https_url("github.com/TaylorFinklea/chezmoi-base.git") + "'"}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_https_git_remote_without_git_suffix(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://github.com/private/repo"}
+            {"dot_example": remote_url("github.com/private/repo")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
@@ -347,11 +362,11 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_standard_forge_https_git_remotes_without_git_suffix(self):
         code, output = scan_output(
             {
-                "dot_bitbucket": "remote = https://bitbucket.org/workspace/repo",
-                "dot_codeberg": "remote = https://codeberg.org/owner/repo",
-                "dot_gitlab": "remote = https://gitlab.com/group/repo",
+                "dot_bitbucket": remote_url("bitbucket.org/workspace/repo"),
+                "dot_codeberg": remote_url("codeberg.org/owner/repo"),
+                "dot_gitlab": remote_url("gitlab.com/group/repo"),
                 "dot_nested_gitlab": (
-                    "remote = https://gitlab.com/group/subgroup/repo"
+                    remote_url("gitlab.com/group/subgroup/repo")
                 ),
             }
         )
@@ -366,14 +381,14 @@ class PublicSafetyScannerTests(unittest.TestCase):
 
     def test_rejects_fullwidth_github_host_without_git_suffix(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://Ｇｉｔｈｕｂ．ｃｏｍ/owner/repo"}
+            {"dot_example": remote_url("Ｇｉｔｈｕｂ．ｃｏｍ/owner/repo")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_https_git_remote_with_percent_encoded_git_suffix(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://gitlab.com/group/repo%2Egit"}
+            {"dot_example": remote_url("gitlab.com/group/repo%2Egit")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
@@ -381,8 +396,8 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_normalized_github_hosts_without_git_suffix(self):
         code, output = scan_output(
             {
-                "dot_fullwidth": "remote = https://github。com/owner/repo",
-                "dot_www": "remote = https://www.github.com/owner/repo",
+                "dot_fullwidth": remote_url("github。com/owner/repo"),
+                "dot_www": remote_url("www.github.com/owner/repo"),
             }
         )
         self.assertNotEqual(code, 0)
@@ -394,20 +409,20 @@ class PublicSafetyScannerTests(unittest.TestCase):
 
     def test_accepts_ordinary_https_documentation_url_with_repository_like_path(self):
         self.assertEqual(
-            run_scan({"dot_example": "docs = https://docs.example.com/owner/repo"}),
+            run_scan({"dot_example": "docs = " + https_url("docs.example.com/owner/repo")}),
             0,
         )
 
     def test_rejects_https_git_remote_with_trailing_dot_github_host(self):
         code, output = scan_output(
-            {"dot_example": "remote = https://github.com./owner/repo"}
+            {"dot_example": remote_url("github.com./owner/repo")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_embedded_https_url_credentials(self):
         code, output = scan_output(
-            {"dot_example": "docs = https://user:password@example.com/guide"}
+            {"dot_example": "docs = " + https_url("user:password@example.com/guide")}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: url-credentials\n")
@@ -416,7 +431,7 @@ class PublicSafetyScannerTests(unittest.TestCase):
         code, output = scan_output(
             {
                 "dot_example": (
-                    "docs = https://user:password@docs.example.com/guide?title=Résumé"
+                    "docs = " + https_url("user:password" + "@docs.example.com/guide?title=Résumé")
                 )
             }
         )
@@ -429,13 +444,13 @@ class PublicSafetyScannerTests(unittest.TestCase):
 
     def test_accepts_ordinary_https_documentation_url(self):
         self.assertEqual(
-            run_scan({"dot_example": "docs = https://docs.example.com/guide"}),
+            run_scan({"dot_example": "docs = " + https_url("docs.example.com/guide")}),
             0,
         )
 
     def test_accepts_non_ascii_ordinary_https_documentation_url(self):
         self.assertEqual(
-            run_scan({"dot_example": "docs = https://docs.example.com/guide?title=Résumé"}),
+            run_scan({"dot_example": "docs = " + https_url("docs.example.com/guide?title=Résumé")}),
             0,
         )
 
@@ -495,24 +510,21 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertFalse(any(value in output for value in credentials.values()))
 
     def test_reports_home_path_without_contents(self):
-        code, output = scan_output({"dot_example": "path = /home/someone/private"})
+        code, output = scan_output({"dot_example": "path = /" + "home/someone/private"})
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: private-path\n")
 
     def test_reports_ssh_url_without_contents(self):
-        code, output = scan_output({"dot_example": "remote = ssh://github.com/private/repo.git"})
+        code, output = scan_output({"dot_example": "remote = ssh" + "://github.com/private/repo.git"})
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: ssh-url\n")
 
-    def test_scans_nested_tests_but_skips_root_tests(self):
+    def test_scans_regular_root_test_files(self):
         code, output = scan_output(
-            {
-                "tests/auth.json": "root fixture",
-                "dot_config/tests/auth.json": "nested target",
-            }
+            {"tests/fixture.txt": "token = " + "sk-" + ("a" * 26)}
         )
         self.assertNotEqual(code, 0)
-        self.assertEqual(output, "dot_config/tests/auth.json: sensitive-basename\n")
+        self.assertEqual(output, "tests/fixture.txt: openai-credential\n")
 
     def test_rejects_unreadable_nested_directory_from_walker_error(self):
         with tempfile.TemporaryDirectory() as directory:
