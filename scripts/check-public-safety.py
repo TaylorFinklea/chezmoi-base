@@ -89,16 +89,33 @@ def is_non_ascii_https_git_remote(candidate):
     )
     authority = remainder[:path_start]
     path = remainder[path_start:].split(b"?", 1)[0].split(b"#", 1)[0]
-    return (
-        any(byte > 127 for byte in authority + path)
-        and unquote_to_bytes(path).rstrip(b"/").endswith(b".git")
+    decoded_path = unquote_to_bytes(path)
+    normalized_path = posixpath.normpath(decoded_path)
+    path_parts = tuple(part for part in normalized_path.split(b"/") if part)
+    hostname_with_port = unquote_to_bytes(authority).rsplit(b"@", 1)[-1]
+    normalized_hostname = hostname_with_port.partition(b":")[0].lower().rstrip(b".")
+    is_github_repository = (
+        normalized_hostname == b"github.com" and len(path_parts) == 2
+    )
+    return any(byte > 127 for byte in candidate) and (
+        decoded_path.rstrip(b"/").endswith(b".git") or is_github_repository
     )
 
 
 def https_url_rules(contents):
     rules = set()
     for match in HTTPS_URL_PATTERN.finditer(contents):
-        candidate = match.group().rstrip(b".,;:!?)]}")
+        raw_candidate = match.group()
+        candidate = raw_candidate.rstrip(b".,;:!?)]}")
+        allowed_remote = ALLOWED_HTTPS_GIT_REMOTE.encode()
+        is_delimited = (
+            contents[match.start() - 1 : match.start()] in (b"'", b'"', b"<")
+            or contents[match.end() : match.end() + 1] in (b"'", b'"', b">")
+        )
+        is_allowed_remote = raw_candidate == allowed_remote and not is_delimited
+        if candidate.startswith(allowed_remote) and not is_allowed_remote:
+            rules.add("git-remote")
+            continue
         if is_non_ascii_https_git_remote(candidate):
             rules.add("git-remote")
             continue
@@ -117,11 +134,7 @@ def https_url_rules(contents):
             normalized_hostname == "github.com" and len(path_parts) == 2
         )
         is_git_remote = decoded_path.rstrip("/").endswith(".git") or is_github_repository
-        is_quoted = (
-            contents[match.start() - 1 : match.start()] in (b"'", b'"')
-            or contents[match.end() : match.end() + 1] in (b"'", b'"')
-        )
-        if is_git_remote and (url != ALLOWED_HTTPS_GIT_REMOTE or is_quoted):
+        if is_git_remote and not is_allowed_remote:
             rules.add("git-remote")
     return rules
 
