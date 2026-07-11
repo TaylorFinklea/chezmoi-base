@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import posixpath
 import re
 import stat
 import sys
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 
 FORBIDDEN_BASENAMES = {
@@ -76,10 +77,31 @@ def path_rules(relative_path):
     return rules
 
 
+def is_non_ascii_https_git_remote(candidate):
+    remainder = candidate[len(b"https://") :]
+    path_start = min(
+        (
+            index
+            for separator in (b"/", b"?", b"#")
+            if (index := remainder.find(separator)) != -1
+        ),
+        default=len(remainder),
+    )
+    authority = remainder[:path_start]
+    path = remainder[path_start:].split(b"?", 1)[0].split(b"#", 1)[0]
+    return (
+        any(byte > 127 for byte in authority + path)
+        and unquote_to_bytes(path).rstrip(b"/").endswith(b".git")
+    )
+
+
 def https_url_rules(contents):
     rules = set()
     for match in HTTPS_URL_PATTERN.finditer(contents):
         candidate = match.group().rstrip(b".,;:!?)]}")
+        if is_non_ascii_https_git_remote(candidate):
+            rules.add("git-remote")
+            continue
         try:
             url = candidate.decode("ascii")
             parsed = urlsplit(url)
@@ -88,7 +110,8 @@ def https_url_rules(contents):
         if parsed.username is not None or parsed.password is not None:
             rules.add("url-credentials")
         decoded_path = unquote(parsed.path)
-        path_parts = tuple(part for part in decoded_path.split("/") if part)
+        normalized_path = posixpath.normpath(decoded_path)
+        path_parts = tuple(part for part in normalized_path.split("/") if part)
         normalized_hostname = unquote(parsed.hostname or "").lower().rstrip(".")
         is_github_repository = (
             normalized_hostname == "github.com" and len(path_parts) == 2
@@ -142,6 +165,51 @@ def scan(root):
             except ValueError:
                 relative_path = Path(".")
         violations.add((str(relative_path), "unreadable-directory"))
+
+    def scan_root_tests_symlinks():
+        tests_path = root / "tests"
+        try:
+            tests_mode = tests_path.lstat().st_mode
+        except FileNotFoundError:
+            return
+        except OSError:
+            violations.add(("tests", "unreadable-path"))
+            return
+        if stat.S_ISLNK(tests_mode):
+            violations.update(
+                ("tests", rule) for rule in path_rules(Path("tests")) | {"symlink"}
+            )
+            return
+        if not stat.S_ISDIR(tests_mode):
+            return
+
+        directories = [tests_path]
+        while directories:
+            directory_path = directories.pop()
+            relative_directory = directory_path.relative_to(root)
+            try:
+                with os.scandir(directory_path) as entries:
+                    names = sorted(entry.name for entry in entries)
+            except OSError:
+                violations.add((str(relative_directory), "unreadable-directory"))
+                continue
+            for name in names:
+                path = directory_path / name
+                relative_path = path.relative_to(root)
+                try:
+                    mode = path.lstat().st_mode
+                except OSError:
+                    violations.add((str(relative_path), "unreadable-path"))
+                    continue
+                if stat.S_ISLNK(mode):
+                    violations.update(
+                        (str(relative_path), rule)
+                        for rule in path_rules(relative_path) | {"symlink"}
+                    )
+                elif stat.S_ISDIR(mode):
+                    directories.append(path)
+
+    scan_root_tests_symlinks()
 
     for directory, directory_names, file_names in os.walk(
         root, topdown=True, onerror=record_walk_error, followlinks=False

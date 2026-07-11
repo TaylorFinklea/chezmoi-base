@@ -144,6 +144,22 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(output, ".DS_Store: symlink\n")
 
+    def test_rejects_symlinks_nested_under_root_tests_without_following_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            nested_tests = root / "tests" / "fixtures"
+            nested_tests.mkdir(parents=True)
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (outside / "dot_env").write_text("synthetic env")
+            (nested_tests / "fixture-link").symlink_to(
+                outside, target_is_directory=True
+            )
+            code, output = scan_output_from_root(root)
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "tests/fixtures/fixture-link: symlink\n")
+
     def test_rejects_openai_style_credential(self):
         self.assertNotEqual(run_scan({"dot_example": "token = " + "sk-" + ("a" * 26)}), 0)
 
@@ -175,6 +191,27 @@ class PublicSafetyScannerTests(unittest.TestCase):
             ),
             0,
         )
+
+    def test_rejects_non_ascii_https_git_remotes(self):
+        code, output = scan_output(
+            {
+                "dot_non_ascii_host": "remote = https://gitföo.com/owner/repo.git",
+                "dot_non_ascii_path": "remote = https://github.com/owner/répo.git",
+            }
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(
+            output,
+            "dot_non_ascii_host: git-remote\n"
+            "dot_non_ascii_path: git-remote\n",
+        )
+
+    def test_rejects_github_url_with_percent_encoded_dot_segment(self):
+        code, output = scan_output(
+            {"dot_example": "remote = https://github.com/%2e/private/repo"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_noncanonical_https_git_remote(self):
         code, output = scan_output(
