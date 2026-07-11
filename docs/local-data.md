@@ -11,18 +11,27 @@ Local composition data and state live at these exact locations:
 ~/.local/state/chezmoi-compose/work.boltdb
 ```
 
-Initial TOML contains only one of these forms:
+Initial TOML contains only these exact files:
+
+`base.toml`:
 
 ```toml
 [data]
 machine_role = "personal"
 ```
 
-or:
+`personal.toml`:
 
 ```toml
 [data]
-machine_role = "work"
+ai_profile = "personal"
+machine_role = "personal"
 ```
 
-Later Hermes values are permitted only in the personal local data file.
+`work.toml`:
+
+```toml
+[data]
+ai_profile = "work"
+machine_role = "work"
+```
