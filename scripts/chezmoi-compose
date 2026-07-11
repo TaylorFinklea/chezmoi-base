@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_SOURCE="${CHEZMOI_BASE_SOURCE:-$HOME/git/chezmoi-base}"
+PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE:-$HOME/git/chezmoi-config}"
+WORK_SOURCE="${CHEZMOI_WORK_SOURCE:-$HOME/git/chezmoi-work}"
+CONFIG_ROOT="${CHEZMOI_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-compose}"
+STATE_ROOT="${CHEZMOI_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/chezmoi-compose}"
+DESTINATION="${CHEZMOI_DESTINATION:-$HOME}"
+
+sources_for_role() {
+  case "$1" in
+    personal) printf '%s\n%s\n' "$BASE_SOURCE" "$PERSONAL_SOURCE" ;;
+    work) printf '%s\n%s\n' "$BASE_SOURCE" "$WORK_SOURCE" ;;
+    *) printf 'unsupported role: %s\n' "$1" >&2; return 64 ;;
+  esac
+}
+
+config_for_source() {
+  case "$1" in
+    "$BASE_SOURCE") printf '%s/base.toml\n' "$CONFIG_ROOT" ;;
+    "$PERSONAL_SOURCE") printf '%s/personal.toml\n' "$CONFIG_ROOT" ;;
+    "$WORK_SOURCE") printf '%s/work.toml\n' "$CONFIG_ROOT" ;;
+    *) return 64 ;;
+  esac
+}
+
+state_for_source() {
+  case "$1" in
+    "$BASE_SOURCE") printf '%s/base.boltdb\n' "$STATE_ROOT" ;;
+    "$PERSONAL_SOURCE") printf '%s/personal.boltdb\n' "$STATE_ROOT" ;;
+    "$WORK_SOURCE") printf '%s/work.boltdb\n' "$STATE_ROOT" ;;
+    *) return 64 ;;
+  esac
+}
+
+usage() {
+  printf 'usage: %s <preflight|diff|verify> <personal|work>\n' "$0" >&2
+}
+
+run_chezmoi() {
+  local source config state
+
+  source=$1
+  shift
+  config=$(config_for_source "$source") || return $?
+  state=$(state_for_source "$source") || return $?
+
+  chezmoi --source "$source" --config "$config" \
+    --persistent-state "$state" --destination "$DESTINATION" "$@"
+}
+
+require_selected_sources() {
+  local source config
+
+  for source in "${sources[@]}"; do
+    if [ ! -d "$source" ]; then
+      printf 'source directory does not exist: %s\n' "$source" >&2
+      return 66
+    fi
+
+    config=$(config_for_source "$source") || return $?
+    if [ ! -f "$config" ]; then
+      printf 'config file does not exist: %s\n' "$config" >&2
+      return 66
+    fi
+  done
+
+  mkdir -p "$STATE_ROOT"
+}
+
+preflight() {
+  local temp_dir source
+
+  temp_dir=$(mktemp -d "$STATE_ROOT/chezmoi-compose.XXXXXX")
+
+  if ! run_chezmoi "${sources[0]}" managed --include files,symlinks --path-style absolute > "$temp_dir/base"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  if ! run_chezmoi "${sources[1]}" managed --include files,symlinks --path-style absolute > "$temp_dir/overlay"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  if ! LC_ALL=C sort "$temp_dir/base" > "$temp_dir/base.sorted"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  if ! LC_ALL=C sort "$temp_dir/overlay" > "$temp_dir/overlay.sorted"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  if ! LC_ALL=C comm -12 "$temp_dir/base.sorted" "$temp_dir/overlay.sorted" > "$temp_dir/collisions"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  if [ -s "$temp_dir/collisions" ]; then
+    printf 'target ownership collision:\n' >&2
+    cat "$temp_dir/collisions" >&2
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  rm -rf "$temp_dir"
+}
+
+if [ "$#" -ne 2 ]; then
+  usage
+  exit 64
+fi
+
+command=$1
+role=$2
+case "$command" in
+  preflight|diff|verify) ;;
+  *) printf 'unsupported command: %s\n' "$command" >&2; exit 64 ;;
+esac
+
+selected_sources=$(sources_for_role "$role") || exit $?
+sources=()
+while IFS= read -r source; do
+  sources[${#sources[@]}]="$source"
+done <<EOF
+$selected_sources
+EOF
+
+if [ "${#sources[@]}" -ne 2 ]; then
+  printf 'expected exactly two sources for role: %s\n' "$role" >&2
+  exit 64
+fi
+
+require_selected_sources
+
+case "$command" in
+  preflight)
+    preflight
+    ;;
+  diff|verify)
+    preflight
+    for source in "${sources[@]}"; do
+      run_chezmoi "$source" "$command"
+    done
+    ;;
+esac
