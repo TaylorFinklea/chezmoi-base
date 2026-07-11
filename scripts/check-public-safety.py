@@ -47,6 +47,7 @@ CHEZMOI_ATTRIBUTE_PREFIXES = (
     "before_",
     "after_",
     "symlink_",
+    "empty_",
 )
 
 
@@ -86,7 +87,18 @@ def https_url_rules(contents):
             continue
         if parsed.username is not None or parsed.password is not None:
             rules.add("url-credentials")
-        if parsed.path.rstrip("/").endswith(".git") and url != ALLOWED_HTTPS_GIT_REMOTE:
+        path_parts = tuple(part for part in parsed.path.split("/") if part)
+        is_github_repository = (
+            parsed.hostname is not None
+            and parsed.hostname.lower() == "github.com"
+            and len(path_parts) == 2
+        )
+        is_git_remote = parsed.path.rstrip("/").endswith(".git") or is_github_repository
+        is_quoted = (
+            contents[match.start() - 1 : match.start()] in (b"'", b'"')
+            or contents[match.end() : match.end() + 1] in (b"'", b'"')
+        )
+        if is_git_remote and (url != ALLOWED_HTTPS_GIT_REMOTE or is_quoted):
             rules.add("git-remote")
     return rules
 

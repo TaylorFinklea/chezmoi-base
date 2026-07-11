@@ -94,6 +94,11 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_env.tmpl: sensitive-basename\n")
 
+    def test_rejects_empty_attribute_forbidden_env_target(self):
+        code, output = scan_output({"empty_dot_env": "synthetic env"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "empty_dot_env: sensitive-basename\n")
+
     def test_rejects_source_symlinks_without_following_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "root"
@@ -156,6 +161,20 @@ class PublicSafetyScannerTests(unittest.TestCase):
     def test_rejects_single_quoted_noncanonical_https_git_remote(self):
         code, output = scan_output(
             {"dot_example": "remote = 'https://github.com/private/repo.git'"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_single_quoted_canonical_https_git_remote(self):
+        code, output = scan_output(
+            {"dot_example": "remote = 'https://github.com/TaylorFinklea/chezmoi-base.git'"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_https_git_remote_without_git_suffix(self):
+        code, output = scan_output(
+            {"dot_example": "remote = https://github.com/private/repo"}
         )
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "dot_example: git-remote\n")

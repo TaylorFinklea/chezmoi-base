@@ -4,7 +4,7 @@ This public repository contains generic configuration only.
 
 It is composed with exactly one overlay: either private personal or private work. It never contains Hermes, credentials, personal identifiers, work identifiers, or private remote URLs.
 
-Public clone URL: `https://github.com/TaylorFinklea/chezmoi-base.git`
+Public clone URL: https://github.com/TaylorFinklea/chezmoi-base.git
 
 ## Normal daily composition
 
