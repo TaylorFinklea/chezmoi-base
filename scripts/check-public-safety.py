@@ -5,6 +5,7 @@ import re
 import stat
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 FORBIDDEN_BASENAMES = {
@@ -30,18 +31,63 @@ TEXT_PATTERNS = (
     ("git-remote", re.compile(rb"git@")),
     ("ssh-url", re.compile(rb"ssh://")),
 )
+HTTPS_URL_PATTERN = re.compile(rb"(?i)(?<![A-Za-z0-9])https://[^\s<>\"]+")
+ALLOWED_HTTPS_GIT_REMOTE = "https://github.com/TaylorFinklea/chezmoi-base.git"
+CHEZMOI_ATTRIBUTE_PREFIXES = (
+    "private_",
+    "executable_",
+    "readonly_",
+    "encrypted_",
+    "exact_",
+    "create_",
+    "modify_",
+    "remove_",
+    "run_",
+    "once_",
+    "before_",
+    "after_",
+    "symlink_",
+)
+
+
+def decode_target_component(component):
+    while True:
+        if component.startswith("literal_"):
+            return component[len("literal_") :]
+        for prefix in CHEZMOI_ATTRIBUTE_PREFIXES:
+            if component.startswith(prefix):
+                component = component[len(prefix) :]
+                break
+        else:
+            if component.startswith("dot_"):
+                return "." + component[len("dot_") :]
+            return component
 
 
 def path_rules(relative_path):
     rules = set()
-    for component in relative_path.parts:
-        if (
-            component in {".hermes", "dot_hermes"}
-            or component.endswith("_dot_hermes")
-        ):
+    decoded_parts = tuple(decode_target_component(component) for component in relative_path.parts)
+    for component in decoded_parts:
+        if component == ".hermes" or component.endswith("_dot_hermes"):
             rules.add("hermes-path")
-    if relative_path.name in FORBIDDEN_BASENAMES:
+    if decoded_parts and decoded_parts[-1] in FORBIDDEN_BASENAMES:
         rules.add("sensitive-basename")
+    return rules
+
+
+def https_url_rules(contents):
+    rules = set()
+    for match in HTTPS_URL_PATTERN.finditer(contents):
+        candidate = match.group().rstrip(b".,;:!?)]}")
+        try:
+            url = candidate.decode("ascii")
+            parsed = urlsplit(url)
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if parsed.username is not None or parsed.password is not None:
+            rules.add("url-credentials")
+        if parsed.path.rstrip("/").endswith(".git") and url != ALLOWED_HTTPS_GIT_REMOTE:
+            rules.add("git-remote")
     return rules
 
 
@@ -53,6 +99,7 @@ def text_rules(contents):
             rules.add("private-email")
             break
     rules.update(name for name, pattern in TEXT_PATTERNS if pattern.search(contents))
+    rules.update(https_url_rules(contents))
     return rules
 
 
@@ -81,20 +128,39 @@ def scan(root):
         root, topdown=True, onerror=record_walk_error, followlinks=False
     ):
         directory_path = Path(directory)
-        directory_names[:] = sorted(
-            name
-            for name in directory_names
-            if name not in {".git", ".DS_Store"}
-            and not (directory_path == root and name == "tests")
-        )
+        retained_directories = []
+        for name in sorted(directory_names):
+            if name in {".git", ".DS_Store"} or (directory_path == root and name == "tests"):
+                continue
+            path = directory_path / name
+            relative_path = path.relative_to(root)
+            try:
+                if stat.S_ISLNK(path.lstat().st_mode):
+                    violations.update(
+                        (str(relative_path), rule)
+                        for rule in path_rules(relative_path) | {"symlink"}
+                    )
+                    continue
+            except OSError:
+                violations.add((str(relative_path), "unreadable-path"))
+                continue
+            retained_directories.append(name)
+        directory_names[:] = retained_directories
         for name in sorted(file_names):
             if name == ".DS_Store":
                 continue
             path = directory_path / name
             try:
-                if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
-                    continue
                 relative_path = path.relative_to(root)
+                mode = path.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    violations.update(
+                        (str(relative_path), rule)
+                        for rule in path_rules(relative_path) | {"symlink"}
+                    )
+                    continue
+                if not stat.S_ISREG(mode):
+                    continue
             except (OSError, ValueError):
                 relative_path = path.relative_to(root) if path.is_absolute() else path
                 violations.add((str(relative_path), "unreadable-path"))

@@ -23,13 +23,18 @@ With no environment overrides, `chezmoi-compose preflight`, `diff`, and `verify`
 
 The TOML files are local composition inputs. The XDG state files are operational state, not managed configuration or targets written by chezmoi. Do not add either to a source repository. The runner's normal commands do not run `apply` or write managed targets to `HOME`.
 
-Initial TOML contains only these exact files:
-
-`base.toml`:
+Initial TOML contains only these exact files. On a personal Mac, `base.toml` is:
 
 ```toml
 [data]
 machine_role = "personal"
+```
+
+On a work Mac, `base.toml` is:
+
+```toml
+[data]
+machine_role = "work"
 ```
 
 `personal.toml`:

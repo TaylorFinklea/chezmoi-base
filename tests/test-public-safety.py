@@ -52,14 +52,18 @@ def scan_output(files):
             path = root / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(contents)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), "--root", str(root)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        return result.returncode, result.stdout
+        return scan_output_from_root(root)
+
+
+def scan_output_from_root(root):
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(root)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    return result.returncode, result.stdout
 
 
 class PublicSafetyScannerTests(unittest.TestCase):
@@ -68,6 +72,42 @@ class PublicSafetyScannerTests(unittest.TestCase):
 
     def test_rejects_hermes_path(self):
         self.assertNotEqual(run_scan({"private_dot_hermes/config.yaml": "x"}), 0)
+
+    def test_rejects_decoded_forbidden_env_target_names(self):
+        code, output = scan_output(
+            {
+                "dot_env": "synthetic env",
+                "private_dot_env": "synthetic private env",
+                "symlink_dot_hermes": "synthetic hermes",
+            }
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(
+            output,
+            "dot_env: sensitive-basename\n"
+            "private_dot_env: sensitive-basename\n"
+            "symlink_dot_hermes: hermes-path\n",
+        )
+
+    def test_rejects_source_symlinks_without_following_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (outside / ".env").write_text("synthetic env")
+            (root / "file-link").symlink_to(outside / ".env")
+            (root / "directory-link").symlink_to(outside, target_is_directory=True)
+            (root / "dangling-link").symlink_to(outside / "missing")
+            code, output = scan_output_from_root(root)
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(
+            output,
+            "dangling-link: symlink\n"
+            "directory-link: symlink\n"
+            "file-link: symlink\n",
+        )
 
     def test_rejects_openai_style_credential(self):
         self.assertNotEqual(run_scan({"dot_example": "token = " + "sk-" + ("a" * 26)}), 0)
@@ -88,6 +128,38 @@ class PublicSafetyScannerTests(unittest.TestCase):
 
     def test_rejects_git_remote(self):
         self.assertNotEqual(run_scan({"dot_example": "remote = git@github.com:private/repo.git"}), 0)
+
+    def test_accepts_canonical_https_git_remote(self):
+        self.assertEqual(
+            run_scan(
+                {
+                    "dot_example": (
+                        "remote = https://github.com/TaylorFinklea/chezmoi-base.git"
+                    )
+                }
+            ),
+            0,
+        )
+
+    def test_rejects_noncanonical_https_git_remote(self):
+        code, output = scan_output(
+            {"dot_example": "remote = https://github.com/private/repo.git"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
+
+    def test_rejects_embedded_https_url_credentials(self):
+        code, output = scan_output(
+            {"dot_example": "docs = https://user:password@example.com/guide"}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: url-credentials\n")
+
+    def test_accepts_ordinary_https_documentation_url(self):
+        self.assertEqual(
+            run_scan({"dot_example": "docs = https://docs.example.com/guide"}),
+            0,
+        )
 
     def test_reports_all_sensitive_basenames_without_contents(self):
         contents = {
