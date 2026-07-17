@@ -7,3 +7,8 @@ tests/
 .git/
 .gitignore
 .DS_Store
+
+# ai-scratch/ is repo-local cross-harness scratch — globally gitignored, never
+# a chezmoi target
+ai-scratch
+ai-scratch/**
