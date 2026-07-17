@@ -1,0 +1,35 @@
+theme = tokyonight
+# Darker background than stock Tokyo Night (#1a1b26) — TN's own sidebar shade.
+background = #16161e
+font-family = "FiraCode Nerd Font"
+macos-option-as-alt = true
+
+# Translate Cmd+h/j/k/l to Alt+h/j/k/l sequences so herdr (and other TUIs) see them
+# without colliding with AeroSpace, which owns physical Alt+h/j/k/l for macOS window nav.
+keybind = cmd+h=esc:h
+keybind = cmd+j=esc:j
+keybind = cmd+k=esc:k
+keybind = cmd+l=esc:l
+keybind = cmd+shift+h=esc:H
+keybind = cmd+shift+l=esc:L
+
+# Create splits
+keybind = cmd+d=new_split:right
+keybind = cmd+shift+d=new_split:down
+
+keybind = global:cmd+backquote=toggle_quick_terminal
+
+# Shift+Enter sends ESC+CR so Copilot CLI and Codex treat it as newline
+keybind = shift+enter=text:\x1b\x0d
+
+# Forward Cmd+Up/Down/PageUp/PageDown to the foreground app as Kitty CSI-u
+# sequences so pi-mono's pi-powerline-footer extension can scroll chat history
+# (defaults override Ghostty's own scroll-to-top/bottom; codes per shortcuts.ts).
+keybind = cmd+up=csi:57419;9u
+keybind = cmd+down=csi:57420;9u
+keybind = cmd+page_up=csi:57421;9u
+keybind = cmd+page_down=csi:57422;9u
+
+# Notifications from claude and codex
+desktop-notifications = true
+bell-features = system,attention,title,border
