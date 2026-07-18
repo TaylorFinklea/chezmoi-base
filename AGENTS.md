@@ -70,7 +70,12 @@ the personal Mac only.
 
 ## Apply
 
-Applies to live HOME are **human-authorized and targeted** — never bare, never
-headless. Expected perpetual drift (classify before treating a failed `verify`
-as a problem): `.claude/settings.json` and `.codex/config.toml` are
-runtime-rewritten by their apps; anything beyond those two files is real.
+Routine convergence runs through `scripts/chezmoi-compose sync` (shim:
+`chezmoi-sync`; scheduled daily via launchd). Non-interactive runs apply
+*clean* drift only — a file changed on both sides is never auto-resolved; it
+is reported, notified, and waits for an interactive `chezmoi-sync` where the
+user picks overwrite / import / skip. Targeted repair: `chezmoi-compose
+apply <role> <target>...`. Bare `chezmoi apply` and headless agent-loop
+applies remain forbidden. Expected perpetual drift (skip-listed by sync):
+`.claude/settings.json` and `.codex/config.toml` are runtime-rewritten by
+their apps; anything beyond those two files is real.
