@@ -36,6 +36,16 @@ state_for_source() {
 
 usage() {
   printf 'usage: %s <preflight|diff|verify> <personal|work>\n' "$0" >&2
+  printf '       %s sync [personal|work] [--non-interactive] [--no-pull]\n' "$0" >&2
+  printf '       %s apply <personal|work> <absolute-target>...\n' "$0" >&2
+}
+
+detect_role() {
+  if [ -d "$PERSONAL_SOURCE" ]; then
+    printf 'personal\n'
+  else
+    printf 'work\n'
+  fi
 }
 
 run_chezmoi() {
@@ -105,16 +115,56 @@ preflight() {
   rm -rf "$temp_dir"
 }
 
-if [ "$#" -ne 2 ]; then
+command=${1:-}
+if [ -z "$command" ]; then
   usage
   exit 64
 fi
+shift
 
-command=$1
-role=$2
+role=
+non_interactive=0
+no_pull=0
+apply_targets=()
+
 case "$command" in
-  preflight|diff|verify) ;;
-  *) printf 'unsupported command: %s\n' "$command" >&2; exit 64 ;;
+  preflight|diff|verify)
+    if [ "$#" -ne 1 ]; then
+      usage
+      exit 64
+    fi
+    role=$1
+    ;;
+  apply)
+    if [ "$#" -lt 2 ]; then
+      usage
+      exit 64
+    fi
+    role=$1
+    shift
+    apply_targets=("$@")
+    ;;
+  sync)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        personal|work) role=$1 ;;
+        --non-interactive) non_interactive=1 ;;
+        --no-pull) no_pull=1 ;;
+        *) usage; exit 64 ;;
+      esac
+      shift
+    done
+    if [ -z "$role" ]; then
+      role=$(detect_role)
+    fi
+    if [ ! -t 0 ]; then
+      non_interactive=1
+    fi
+    ;;
+  *)
+    printf 'unsupported command: %s\n' "$command" >&2
+    exit 64
+    ;;
 esac
 
 selected_sources=$(sources_for_role "$role") || exit $?
@@ -141,5 +191,13 @@ case "$command" in
     for source in "${sources[@]}"; do
       run_chezmoi "$source" "$command"
     done
+    ;;
+  apply)
+    preflight
+    printf 'apply: not implemented yet\n' >&2
+    exit 70
+    ;;
+  sync)
+    preflight
     ;;
 esac

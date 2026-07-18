@@ -20,7 +20,7 @@ fi
 
 run_compose() {
   export CHEZMOI_BASE_SOURCE="$tmp/base"
-  export CHEZMOI_PERSONAL_SOURCE="$tmp/personal"
+  export CHEZMOI_PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE_OVERRIDE:-$tmp/personal}"
   export CHEZMOI_WORK_SOURCE="$tmp/work"
   export CHEZMOI_CONFIG_ROOT="$tmp/config"
   export CHEZMOI_STATE_ROOT="$tmp/state"
@@ -178,6 +178,35 @@ fi
 
 if [ -e "$tmp/destination" ]; then
   fail 'runner created the destination directory'
+fi
+
+# --- sync CLI plumbing ---
+: > "$call_log"
+if ! run_compose sync personal; then
+  fail 'sync personal should succeed as a stub'
+fi
+if ! grep -Fqx "managed:$tmp/personal" "$call_log"; then
+  fail 'sync personal should preflight the personal overlay'
+fi
+
+: > "$call_log"
+if ! run_compose sync; then
+  fail 'sync with no role should autodetect personal when personal source exists'
+fi
+if ! grep -Fqx "managed:$tmp/personal" "$call_log"; then
+  fail 'sync autodetect should pick the personal overlay'
+fi
+
+: > "$call_log"
+if ! CHEZMOI_PERSONAL_SOURCE_OVERRIDE="$tmp/nonexistent" run_compose sync; then
+  fail 'sync autodetect should fall back to work when personal source is absent'
+fi
+if ! grep -Fqx "managed:$tmp/work" "$call_log"; then
+  fail 'sync autodetect fallback should pick the work overlay'
+fi
+
+if run_compose sync --bogus-flag > /dev/null 2>&1; then
+  fail 'sync should reject unknown flags'
 fi
 
 printf 'test-compose: all assertions passed\n'
