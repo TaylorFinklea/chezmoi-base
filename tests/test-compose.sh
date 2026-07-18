@@ -165,6 +165,12 @@ esac
 EOF
 chmod +x "$fake_bin/git"
 
+cat > "$fake_bin/osascript" <<'EOF'
+#!/usr/bin/env bash
+printf 'osascript-notify\n' >> "$CHEZMOI_CALL_LOG"
+EOF
+chmod +x "$fake_bin/osascript"
+
 if ! run_compose preflight personal; then
   fail 'preflight personal should succeed for distinct base and personal targets'
 fi
@@ -323,5 +329,38 @@ if ! grep -Fqx "apply-args:$tmp/personal:--force -- $tmp/destination/.pi-setting
   fail 'whitespace-only MM drift should force-apply'
 fi
 rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
+
+# --- decisions in non-interactive mode ---
+printf 'MM .tmux.conf\n' > "$tmp/personal/fake-status.txt"
+printf -- '-real old\n+real new\n' > "$tmp/personal/fake-diff.txt"
+: > "$call_log"
+decisions_out="$tmp/decisions.out"
+if run_compose sync personal --no-pull --non-interactive > "$decisions_out" 2>&1; then
+  fail 'sync with a real MM conflict should not exit 0'
+else
+  decisions_status=$?
+fi
+if [ "$decisions_status" -ne 2 ]; then
+  fail "sync with pending decisions should exit 2, got $decisions_status"
+fi
+if grep -F "apply-args" "$call_log" | grep -Fq '.tmux.conf'; then
+  fail 'a real MM conflict must not be applied non-interactively'
+fi
+if ! grep -Fq '.tmux.conf' "$decisions_out"; then
+  fail 'pending decision should be listed in the report'
+fi
+if ! grep -Fqx 'osascript-notify' "$call_log"; then
+  fail 'pending decisions should trigger a notification'
+fi
+rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
+
+# clean sync still exits 0 and prints a summary
+: > "$call_log"
+if ! run_compose sync personal --no-pull > "$tmp/clean.out" 2>&1; then
+  fail 'clean sync should exit 0'
+fi
+if ! grep -Fq 'decisions pending: 0' "$tmp/clean.out"; then
+  fail 'summary should report zero pending decisions'
+fi
 
 printf 'test-compose: all assertions passed\n'

@@ -204,6 +204,87 @@ EOF
   fi
 }
 
+notify_decisions() {
+  local count=$1
+
+  if ! command -v osascript > /dev/null 2>&1; then
+    return 0
+  fi
+  osascript -e "display notification \"$count file(s) need decisions - run chezmoi-sync\" with title \"chezmoi sync\"" > /dev/null 2>&1 || true
+}
+
+resolve_decisions() {
+  local entry source target abs source_path choice remaining
+
+  remaining=()
+  for entry in "${sync_decisions[@]}"; do
+    source=${entry%%|*}
+    target=${entry#*|}
+    abs="$DESTINATION/$target"
+    printf '\n--- decision needed: %s (owner: %s) ---\n' "$target" "$source"
+    run_chezmoi "$source" diff -- "$abs" || true
+    source_path=$(run_chezmoi "$source" source-path -- "$abs" 2>/dev/null) || source_path=
+    case "$source_path" in
+      *.tmpl)
+        printf 'templated target: import unavailable, merge manually into %s\n' "$source_path"
+        printf '[o]verwrite from source / [s]kip? '
+        ;;
+      *)
+        printf '[o]verwrite from source / [i]mport into source / [s]kip? '
+        ;;
+    esac
+    IFS= read -r choice
+    case "$choice" in
+      o)
+        run_chezmoi "$source" apply --force -- "$abs"
+        sync_applied[${#sync_applied[@]}]="$abs"
+        ;;
+      i)
+        case "$source_path" in
+          *.tmpl)
+            printf 'import unavailable for templated target, skipping\n'
+            remaining[${#remaining[@]}]="$entry"
+            ;;
+          *)
+            run_chezmoi "$source" re-add -- "$abs"
+            printf 'imported %s - review and commit in %s\n' "$target" "$source"
+            ;;
+        esac
+        ;;
+      *)
+        remaining[${#remaining[@]}]="$entry"
+        ;;
+    esac
+  done
+  sync_decisions=()
+  if [ "${#remaining[@]}" -gt 0 ]; then
+    for entry in "${remaining[@]}"; do
+      sync_decisions[${#sync_decisions[@]}]="$entry"
+    done
+  fi
+}
+
+print_summary() {
+  local entry
+
+  printf '\nchezmoi-sync summary (%s):\n' "$role"
+  printf '  repos pulled: %d\n' "${#sync_pulled[@]}"
+  if [ "${#sync_notes[@]}" -gt 0 ]; then
+    for entry in "${sync_notes[@]}"; do
+      printf '  note: %s\n' "$entry"
+    done
+  fi
+  printf '  applied: %d\n' "${#sync_applied[@]}"
+  printf '  state refreshed: %d\n' "${#sync_refreshed[@]}"
+  printf '  runtime drift skipped: %d\n' "${#sync_skipped[@]}"
+  printf '  decisions pending: %d\n' "${#sync_decisions[@]}"
+  if [ "${#sync_decisions[@]}" -gt 0 ]; then
+    for entry in "${sync_decisions[@]}"; do
+      printf '    %s (owner: %s)\n' "${entry#*|}" "${entry%%|*}"
+    done
+  fi
+}
+
 sync_run() {
   local source
 
@@ -216,6 +297,16 @@ sync_run() {
   for source in "${sources[@]}"; do
     classify_source "$source"
   done
+  if [ "${#sync_decisions[@]}" -gt 0 ] && [ "$non_interactive" -eq 0 ]; then
+    resolve_decisions
+  fi
+  print_summary
+  if [ "${#sync_decisions[@]}" -gt 0 ]; then
+    if [ "$non_interactive" -eq 1 ]; then
+      notify_decisions "${#sync_decisions[@]}"
+    fi
+    return 2
+  fi
 }
 
 apply_targets_cmd() {
