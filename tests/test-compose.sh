@@ -125,6 +125,9 @@ case "$subcommand" in
       exit 70
     fi
     ;;
+  apply)
+    printf 'apply-args:%s:%s\n' "$source" "$*" >> "$CHEZMOI_CALL_LOG"
+    ;;
   *)
     printf 'unexpected chezmoi subcommand: %s\n' "$subcommand" >&2
     exit 70
@@ -207,6 +210,27 @@ fi
 
 if run_compose sync --bogus-flag > /dev/null 2>&1; then
   fail 'sync should reject unknown flags'
+fi
+
+# --- targeted apply ---
+: > "$call_log"
+if ! run_compose apply personal "$tmp/destination/shared" "$tmp/destination/personal"; then
+  fail 'targeted apply should succeed for owned targets'
+fi
+if ! grep -Fqx "apply-args:$tmp/base:-- $tmp/destination/shared" "$call_log"; then
+  fail 'base-owned target should be applied through the base source'
+fi
+if ! grep -Fqx "apply-args:$tmp/personal:-- $tmp/destination/personal" "$call_log"; then
+  fail 'overlay-owned target should be applied through the overlay source'
+fi
+
+if run_compose apply personal "$tmp/destination/unmanaged" > /dev/null 2>&1; then
+  fail 'apply should reject an unmanaged target'
+else
+  unmanaged_status=$?
+fi
+if [ "$unmanaged_status" -ne 65 ]; then
+  fail "unmanaged target should exit 65, got $unmanaged_status"
 fi
 
 printf 'test-compose: all assertions passed\n'

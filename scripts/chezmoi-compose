@@ -79,40 +79,58 @@ require_selected_sources() {
   mkdir -p "$STATE_ROOT"
 }
 
+managed_lists_dir=
+
+cleanup() {
+  if [ -n "$managed_lists_dir" ]; then
+    rm -rf "$managed_lists_dir"
+  fi
+}
+trap cleanup EXIT
+
+collect_managed_lists() {
+  if [ -n "$managed_lists_dir" ]; then
+    return 0
+  fi
+  mkdir -p "$STATE_ROOT"
+  managed_lists_dir=$(mktemp -d "$STATE_ROOT/chezmoi-compose.XXXXXX")
+  run_chezmoi "${sources[0]}" managed --include files,symlinks --path-style absolute > "$managed_lists_dir/base"
+  run_chezmoi "${sources[1]}" managed --include files,symlinks --path-style absolute > "$managed_lists_dir/overlay"
+}
+
 preflight() {
-  local temp_dir source
-
-  temp_dir=$(mktemp -d "$STATE_ROOT/chezmoi-compose.XXXXXX")
-
-  if ! run_chezmoi "${sources[0]}" managed --include files,symlinks --path-style absolute > "$temp_dir/base"; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  if ! run_chezmoi "${sources[1]}" managed --include files,symlinks --path-style absolute > "$temp_dir/overlay"; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  if ! LC_ALL=C sort "$temp_dir/base" > "$temp_dir/base.sorted"; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  if ! LC_ALL=C sort "$temp_dir/overlay" > "$temp_dir/overlay.sorted"; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  if ! LC_ALL=C comm -12 "$temp_dir/base.sorted" "$temp_dir/overlay.sorted" > "$temp_dir/collisions"; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-
-  if [ -s "$temp_dir/collisions" ]; then
+  collect_managed_lists
+  LC_ALL=C sort "$managed_lists_dir/base" > "$managed_lists_dir/base.sorted"
+  LC_ALL=C sort "$managed_lists_dir/overlay" > "$managed_lists_dir/overlay.sorted"
+  LC_ALL=C comm -12 "$managed_lists_dir/base.sorted" "$managed_lists_dir/overlay.sorted" > "$managed_lists_dir/collisions"
+  if [ -s "$managed_lists_dir/collisions" ]; then
     printf 'target ownership collision:\n' >&2
-    cat "$temp_dir/collisions" >&2
-    rm -rf "$temp_dir"
+    cat "$managed_lists_dir/collisions" >&2
     return 1
   fi
+}
 
-  rm -rf "$temp_dir"
+apply_targets_cmd() {
+  local target base_batch overlay_batch
+
+  base_batch=()
+  overlay_batch=()
+  for target in "${apply_targets[@]}"; do
+    if LC_ALL=C grep -Fqx -- "$target" "$managed_lists_dir/base"; then
+      base_batch[${#base_batch[@]}]="$target"
+    elif LC_ALL=C grep -Fqx -- "$target" "$managed_lists_dir/overlay"; then
+      overlay_batch[${#overlay_batch[@]}]="$target"
+    else
+      printf 'target not managed by base or overlay: %s\n' "$target" >&2
+      return 65
+    fi
+  done
+  if [ "${#base_batch[@]}" -gt 0 ]; then
+    run_chezmoi "${sources[0]}" apply -- "${base_batch[@]}"
+  fi
+  if [ "${#overlay_batch[@]}" -gt 0 ]; then
+    run_chezmoi "${sources[1]}" apply -- "${overlay_batch[@]}"
+  fi
 }
 
 command=${1:-}
@@ -194,8 +212,7 @@ case "$command" in
     ;;
   apply)
     preflight
-    printf 'apply: not implemented yet\n' >&2
-    exit 70
+    apply_targets_cmd
     ;;
   sync)
     preflight
