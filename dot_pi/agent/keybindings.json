@@ -1,3 +1,4 @@
 {
-  "app.interrupt": "ctrl+c"
+  "app.interrupt": "ctrl+c",
+  "tui.input.newLine": ["shift+enter", "ctrl+j", "alt+enter"]
 }
