@@ -110,6 +110,38 @@ preflight() {
   fi
 }
 
+sync_pulled=()
+sync_notes=()
+
+pull_repo() {
+  local repo=$1
+
+  if [ ! -d "$repo/.git" ]; then
+    sync_notes[${#sync_notes[@]}]="$repo: not a git repo, pull skipped"
+    return 0
+  fi
+  if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
+    sync_notes[${#sync_notes[@]}]="$repo: dirty working tree, pull skipped"
+    return 0
+  fi
+  if git -C "$repo" pull --ff-only --quiet 2>/dev/null; then
+    sync_pulled[${#sync_pulled[@]}]="$repo"
+  else
+    sync_notes[${#sync_notes[@]}]="$repo: pull failed (offline or diverged), continuing with local tree"
+  fi
+}
+
+sync_run() {
+  local source
+
+  if [ "$no_pull" -eq 0 ]; then
+    for source in "${sources[@]}"; do
+      pull_repo "$source"
+    done
+  fi
+  preflight
+}
+
 apply_targets_cmd() {
   local target base_batch overlay_batch
 
@@ -215,6 +247,6 @@ case "$command" in
     apply_targets_cmd
     ;;
   sync)
-    preflight
+    sync_run
     ;;
 esac

@@ -136,6 +136,23 @@ esac
 EOF
 chmod +x "$fake_bin/chezmoi"
 
+cat > "$fake_bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+repo=
+if [ "${1:-}" = "-C" ]; then
+  repo=$2
+  shift 2
+fi
+sub=${1:-}
+printf 'git-%s:%s\n' "$sub" "$repo" >> "$CHEZMOI_CALL_LOG"
+case "$sub" in
+  status) exit 0 ;;
+  pull) if [ "${FAKE_GIT_PULL_FAIL:-0}" = "1" ]; then exit 1; fi ;;
+esac
+EOF
+chmod +x "$fake_bin/git"
+
 if ! run_compose preflight personal; then
   fail 'preflight personal should succeed for distinct base and personal targets'
 fi
@@ -231,6 +248,40 @@ else
 fi
 if [ "$unmanaged_status" -ne 65 ]; then
   fail "unmanaged target should exit 65, got $unmanaged_status"
+fi
+
+# --- sync pull stage ---
+mkdir -p "$tmp/base/.git" "$tmp/personal/.git" "$tmp/work/.git"
+: > "$call_log"
+if ! run_compose sync personal; then
+  fail 'sync should succeed on clean state'
+fi
+if ! grep -Fqx "git-pull:$tmp/base" "$call_log"; then
+  fail 'sync should ff-only pull the base repo'
+fi
+if ! grep -Fqx "git-pull:$tmp/personal" "$call_log"; then
+  fail 'sync should ff-only pull the overlay repo'
+fi
+if ! head -1 "$call_log" | grep -q '^git-'; then
+  fail 'sync should pull before any chezmoi call'
+fi
+
+: > "$call_log"
+if ! run_compose sync personal --no-pull; then
+  fail 'sync --no-pull should succeed'
+fi
+if grep -q '^git-' "$call_log"; then
+  fail 'sync --no-pull should make no git calls'
+fi
+
+: > "$call_log"
+export FAKE_GIT_PULL_FAIL=1
+if ! run_compose sync personal; then
+  fail 'sync should tolerate a failed pull and continue'
+fi
+unset FAKE_GIT_PULL_FAIL
+if ! grep -Fqx "managed:$tmp/base" "$call_log"; then
+  fail 'sync should still preflight after a failed pull'
 fi
 
 printf 'test-compose: all assertions passed\n'
