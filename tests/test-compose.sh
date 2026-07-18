@@ -119,10 +119,22 @@ case "$subcommand" in
       printf '%s/%s\n' "$destination" "$target"
     done
     ;;
-  diff|verify)
+  verify)
     if [ "$#" -ne 0 ]; then
-      printf '%s received unexpected arguments\n' "$subcommand" >&2
+      printf 'verify received unexpected arguments\n' >&2
       exit 70
+    fi
+    ;;
+  diff)
+    if [ "$#" -eq 0 ]; then
+      :
+    elif [ -f "$source/fake-diff.txt" ]; then
+      cat "$source/fake-diff.txt"
+    fi
+    ;;
+  status)
+    if [ -f "$source/fake-status.txt" ]; then
+      cat "$source/fake-status.txt"
     fi
     ;;
   apply)
@@ -283,5 +295,33 @@ unset FAKE_GIT_PULL_FAIL
 if ! grep -Fqx "managed:$tmp/base" "$call_log"; then
   fail 'sync should still preflight after a failed pull'
 fi
+
+# --- sync classifier ---
+printf ' M .zshrc\nM  .stale-state\nMM .claude/settings.json\n' > "$tmp/personal/fake-status.txt"
+: > "$call_log"
+if ! run_compose sync personal --no-pull; then
+  fail 'sync should succeed when drift is clean or skippable'
+fi
+if ! grep -Fqx "apply-args:$tmp/personal:-- $tmp/destination/.zshrc" "$call_log"; then
+  fail 'source-moved file should be auto-applied'
+fi
+if grep -F "apply-args" "$call_log" | grep -Fq '.stale-state'; then
+  fail 'stale-state-only file should not be applied'
+fi
+if grep -F "apply-args" "$call_log" | grep -Fq '.claude/settings.json'; then
+  fail 'runtime skip-list file should never be applied'
+fi
+
+# cosmetic MM auto-applies with --force
+printf 'MM .pi-settings\n' > "$tmp/personal/fake-status.txt"
+printf -- '-line one\n+line one \n' > "$tmp/personal/fake-diff.txt"
+: > "$call_log"
+if ! run_compose sync personal --no-pull; then
+  fail 'sync with only cosmetic MM drift should succeed'
+fi
+if ! grep -Fqx "apply-args:$tmp/personal:--force -- $tmp/destination/.pi-settings" "$call_log"; then
+  fail 'whitespace-only MM drift should force-apply'
+fi
+rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
 
 printf 'test-compose: all assertions passed\n'

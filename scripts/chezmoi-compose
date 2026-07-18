@@ -131,6 +131,79 @@ pull_repo() {
   fi
 }
 
+sync_applied=()
+sync_refreshed=()
+sync_skipped=()
+sync_decisions=()
+
+is_runtime_skip() {
+  case "$1" in
+    .claude/settings.json|.codex/config.toml) return 0 ;;
+  esac
+  return 1
+}
+
+cosmetic_diff() {
+  local source=$1 target=$2 diff_out added removed
+
+  diff_out=$(run_chezmoi "$source" diff -- "$target" 2>/dev/null) || return 1
+  added=$(printf '%s\n' "$diff_out" | grep '^+' | grep -v '^+++' | sed 's/^+//' | tr -d '[:space:]') || true
+  removed=$(printf '%s\n' "$diff_out" | grep '^-' | grep -v '^---' | sed 's/^-//' | tr -d '[:space:]') || true
+  [ "$added" = "$removed" ]
+}
+
+classify_source() {
+  local source=$1 status_out line code target abs plain_batch force_batch
+
+  plain_batch=()
+  force_batch=()
+  status_out=$(run_chezmoi "$source" status)
+  while IFS= read -r line; do
+    if [ -z "$line" ]; then
+      continue
+    fi
+    code=${line:0:2}
+    target=${line:3}
+    abs="$DESTINATION/$target"
+    if is_runtime_skip "$target"; then
+      sync_skipped[${#sync_skipped[@]}]="$target"
+      continue
+    fi
+    case "$code" in
+      ' M'|' A')
+        plain_batch[${#plain_batch[@]}]="$abs"
+        ;;
+      'M ')
+        sync_refreshed[${#sync_refreshed[@]}]="$target"
+        ;;
+      'MM')
+        if cosmetic_diff "$source" "$abs"; then
+          force_batch[${#force_batch[@]}]="$abs"
+        else
+          sync_decisions[${#sync_decisions[@]}]="$source|$target"
+        fi
+        ;;
+      *)
+        sync_decisions[${#sync_decisions[@]}]="$source|$target"
+        ;;
+    esac
+  done <<EOF
+$status_out
+EOF
+  if [ "${#plain_batch[@]}" -gt 0 ]; then
+    run_chezmoi "$source" apply -- "${plain_batch[@]}"
+    for abs in "${plain_batch[@]}"; do
+      sync_applied[${#sync_applied[@]}]="$abs"
+    done
+  fi
+  if [ "${#force_batch[@]}" -gt 0 ]; then
+    run_chezmoi "$source" apply --force -- "${force_batch[@]}"
+    for abs in "${force_batch[@]}"; do
+      sync_applied[${#sync_applied[@]}]="$abs"
+    done
+  fi
+}
+
 sync_run() {
   local source
 
@@ -140,6 +213,9 @@ sync_run() {
     done
   fi
   preflight
+  for source in "${sources[@]}"; do
+    classify_source "$source"
+  done
 }
 
 apply_targets_cmd() {
