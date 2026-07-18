@@ -21,7 +21,7 @@ With no environment overrides, `chezmoi-compose preflight`, `diff`, and `verify`
 | personal overlay | `~/.config/chezmoi-compose/personal.toml` | `~/.local/state/chezmoi-compose/personal.boltdb` |
 | work overlay | `~/.config/chezmoi-compose/work.toml` | `~/.local/state/chezmoi-compose/work.boltdb` |
 
-The TOML files are local composition inputs. The XDG state files are operational state, not managed configuration or targets written by chezmoi. Do not add either to a source repository. The runner's normal commands do not run `apply` or write managed targets to `HOME`.
+The TOML files are local composition inputs. The XDG state files are operational state, not managed configuration or targets written by chezmoi. Do not add either to a source repository. The runner's read-only commands (`preflight`, `diff`, `verify`) never write managed targets to `HOME`; `sync` and `apply` are the only writer subcommands.
 
 Initial TOML contains only these exact files. On a personal Mac, `base.toml` is:
 
@@ -51,6 +51,20 @@ machine_role = "personal"
 [data]
 ai_profile = "work"
 machine_role = "work"
+```
+
+## Sync automation
+
+`chezmoi-sync` (shim at `~/.local/bin/chezmoi-sync`) runs
+`chezmoi-compose sync` for the machine's role: ff-only pull, preflight,
+auto-apply clean drift, and per-file decisions for real conflicts
+(non-interactive runs leave conflicts untouched, exit 2, and post a
+notification). Log: `~/.local/state/chezmoi-compose/sync.log`.
+
+Activate the daily launchd schedule once per machine:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.chezmoi-compose.sync.plist
 ```
 
 ## Isolated validation with direct applies

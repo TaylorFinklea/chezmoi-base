@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+exec "$HOME/git/chezmoi-base/scripts/chezmoi-compose" sync "$@"
