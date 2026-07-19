@@ -2,6 +2,7 @@
 .AppleDouble
 .vscode/
 .idea/
+.worktrees/
 *.swp
 *~
 __pycache__/
