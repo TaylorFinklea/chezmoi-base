@@ -30,6 +30,30 @@ run_compose() {
   PATH="$fake_bin:$PATH" "$runner" "$@"
 }
 
+run_compose_tty() {
+  export CHEZMOI_BASE_SOURCE="$tmp/base"
+  export CHEZMOI_PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE_OVERRIDE:-$tmp/personal}"
+  export CHEZMOI_WORK_SOURCE="$tmp/work"
+  export CHEZMOI_CONFIG_ROOT="$tmp/config"
+  export CHEZMOI_STATE_ROOT="$tmp/state"
+  export CHEZMOI_DESTINATION="$tmp/destination"
+  export CHEZMOI_CALL_LOG="$call_log"
+
+  PATH="$fake_bin:$PATH" /usr/bin/expect -f - -- "$runner" "$@" <<'EOF'
+set timeout 10
+set command [lindex $argv 0]
+set arguments [lrange $argv 1 end]
+spawn -noecho $command {*}$arguments
+expect {
+  -exact {[o]verwrite from source / [i]mport into source / [s]kip? } { send -- "o\r" }
+  timeout { exit 72 }
+}
+expect eof
+set result [wait]
+exit [lindex $result 3]
+EOF
+}
+
 assert_read_only_execution() {
   subcommand=$1
   role=$2
@@ -116,6 +140,10 @@ case "$subcommand" in
         symlink_*) target=${name#symlink_} ;;
         *) continue ;;
       esac
+      case "$target" in
+        shared) target=base-target/shared ;;
+        personal) target=overlay-target/personal ;;
+      esac
       printf '%s/%s\n' "$destination" "$target"
     done
     ;;
@@ -137,8 +165,33 @@ case "$subcommand" in
       cat "$source/fake-status.txt"
     fi
     ;;
+  source-path)
+    if [ "$#" -ne 2 ] || [ "$1" != '--' ]; then
+      printf 'source-path received unexpected arguments\n' >&2
+      exit 70
+    fi
+    printf '%s/dot_%s\n' "$source" "${2##*/}"
+    ;;
   apply)
     printf 'apply-args:%s:%s\n' "$source" "$*" >> "$CHEZMOI_CALL_LOG"
+    parent_dirs=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --force) shift ;;
+        --parent-dirs) parent_dirs=1; shift ;;
+        --) shift; break ;;
+        *) printf 'unexpected apply option: %s\n' "$1" >&2; exit 70 ;;
+      esac
+    done
+    for target in "$@"; do
+      parent=${target%/*}
+      if [ ! -d "$parent" ] && [ "$parent_dirs" -ne 1 ]; then
+        printf 'missing parent without --parent-dirs: %s\n' "$parent" >&2
+        exit 71
+      fi
+      mkdir -p "$parent"
+      : > "$target"
+    done
     ;;
   *)
     printf 'unexpected chezmoi subcommand: %s\n' "$subcommand" >&2
@@ -249,14 +302,19 @@ fi
 
 # --- targeted apply ---
 : > "$call_log"
-if ! run_compose apply personal "$tmp/destination/shared" "$tmp/destination/personal"; then
+base_target="$tmp/destination/base-target/shared"
+overlay_target="$tmp/destination/overlay-target/personal"
+if ! run_compose apply personal "$base_target" "$overlay_target"; then
   fail 'targeted apply should succeed for owned targets'
 fi
-if ! grep -Fqx "apply-args:$tmp/base:-- $tmp/destination/shared" "$call_log"; then
-  fail 'base-owned target should be applied through the base source'
+if ! grep -Fqx "apply-args:$tmp/base:--parent-dirs -- $base_target" "$call_log"; then
+  fail 'base-owned target should apply its distinct missing parent through the base source'
 fi
-if ! grep -Fqx "apply-args:$tmp/personal:-- $tmp/destination/personal" "$call_log"; then
-  fail 'overlay-owned target should be applied through the overlay source'
+if ! grep -Fqx "apply-args:$tmp/personal:--parent-dirs -- $overlay_target" "$call_log"; then
+  fail 'overlay-owned target should apply its distinct missing parent through the overlay source'
+fi
+if [ ! -f "$base_target" ] || [ ! -f "$overlay_target" ]; then
+  fail 'targeted apply should materialize targets in distinct fresh parent trees'
 fi
 
 if run_compose apply personal "$tmp/destination/unmanaged" > /dev/null 2>&1; then
@@ -303,13 +361,13 @@ if ! grep -Fqx "managed:$tmp/base" "$call_log"; then
 fi
 
 # --- sync classifier ---
-printf ' M .zshrc\nM  .stale-state\nMM .claude/settings.json\n' > "$tmp/personal/fake-status.txt"
+printf ' M fresh/clean/.zshrc\nM  .stale-state\nMM .claude/settings.json\n' > "$tmp/personal/fake-status.txt"
 : > "$call_log"
 if ! run_compose sync personal --no-pull; then
   fail 'sync should succeed when drift is clean or skippable'
 fi
-if ! grep -Fqx "apply-args:$tmp/personal:-- $tmp/destination/.zshrc" "$call_log"; then
-  fail 'source-moved file should be auto-applied'
+if ! grep -Fqx "apply-args:$tmp/personal:--parent-dirs -- $tmp/destination/fresh/clean/.zshrc" "$call_log"; then
+  fail 'source-moved file should auto-apply with managed parents'
 fi
 if grep -F "apply-args" "$call_log" | grep -Fq '.stale-state'; then
   fail 'stale-state-only file should not be applied'
@@ -319,19 +377,19 @@ if grep -F "apply-args" "$call_log" | grep -Fq '.claude/settings.json'; then
 fi
 
 # cosmetic MM auto-applies with --force
-printf 'MM .pi-settings\n' > "$tmp/personal/fake-status.txt"
+printf 'MM fresh/force/.pi-settings\n' > "$tmp/personal/fake-status.txt"
 printf -- '-line one\n+line one \n' > "$tmp/personal/fake-diff.txt"
 : > "$call_log"
 if ! run_compose sync personal --no-pull; then
   fail 'sync with only cosmetic MM drift should succeed'
 fi
-if ! grep -Fqx "apply-args:$tmp/personal:--force -- $tmp/destination/.pi-settings" "$call_log"; then
-  fail 'whitespace-only MM drift should force-apply'
+if ! grep -Fqx "apply-args:$tmp/personal:--force --parent-dirs -- $tmp/destination/fresh/force/.pi-settings" "$call_log"; then
+  fail 'whitespace-only MM drift should force-apply with managed parents'
 fi
 rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
 
 # --- decisions in non-interactive mode ---
-printf 'MM .tmux.conf\n' > "$tmp/personal/fake-status.txt"
+printf 'MM fresh/decision/.tmux.conf\n' > "$tmp/personal/fake-status.txt"
 printf -- '-real old\n+real new\n' > "$tmp/personal/fake-diff.txt"
 : > "$call_log"
 decisions_out="$tmp/decisions.out"
@@ -351,6 +409,18 @@ if ! grep -Fq '.tmux.conf' "$decisions_out"; then
 fi
 if ! grep -Fqx 'osascript-notify' "$call_log"; then
   fail 'pending decisions should trigger a notification'
+fi
+
+: > "$call_log"
+if ! run_compose_tty sync personal --no-pull > "$tmp/overwrite.out" 2>&1; then
+  cat "$tmp/overwrite.out" >&2
+  fail 'interactive overwrite should resolve the pending decision'
+fi
+if ! grep -Fqx "apply-args:$tmp/personal:--force --parent-dirs -- $tmp/destination/fresh/decision/.tmux.conf" "$call_log"; then
+  fail 'interactive overwrite should force-apply its distinct missing parent'
+fi
+if [ ! -f "$tmp/destination/fresh/decision/.tmux.conf" ]; then
+  fail 'interactive overwrite should materialize the selected target'
 fi
 rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
 

@@ -28,7 +28,7 @@
 - Consumes: `run_chezmoi <source> apply [flags] -- <absolute-target>...` and existing base/overlay batches.
 - Produces: every wrapper-generated apply argv contains `--parent-dirs` before `--`; no CLI surface changes.
 
-- [ ] **Step 1: Strengthen the fake chezmoi apply behavior and expected argv**
+- [x] **Step 1: Strengthen the fake chezmoi apply behavior and expected argv**
 
 In `tests/test-compose.sh`, retain the existing call log, then make the fake
 `apply)` branch parse `--force`, require `--parent-dirs`, consume `--`, create
@@ -66,10 +66,11 @@ apply-args:<source>:--force --parent-dirs -- <target>
 ```
 
 After the targeted base/overlay apply, assert both targets exist. Add an
-interactive conflict case that pipes `o` to `sync personal --no-pull` and
-asserts its overwrite call uses `--force --parent-dirs --`.
+interactive conflict case using `/usr/bin/expect` to allocate a pseudo-TTY,
+wait for the overwrite prompt, send `o`, and assert the runtime call uses
+`--force --parent-dirs --`.
 
-- [ ] **Step 2: Run the runner test and confirm RED**
+- [x] **Step 2: Run the runner test and confirm RED**
 
 Run:
 
@@ -80,7 +81,7 @@ bash tests/test-compose.sh
 Expected: FAIL because current apply invocations omit `--parent-dirs`; the fake
 chezmoi reports a missing parent or an exact argv assertion fails.
 
-- [ ] **Step 3: Add native parent application to all four call sites**
+- [x] **Step 3: Add native parent application to all apply call sites**
 
 In `scripts/chezmoi-compose`, change only the apply argument vectors:
 
@@ -94,7 +95,7 @@ run_chezmoi "${sources[1]}" apply --parent-dirs -- "${overlay_batch[@]}"
 
 Do not alter classification, ownership, or decision code.
 
-- [ ] **Step 4: Run focused and public verification**
+- [x] **Step 4: Run focused and public verification**
 
 Run:
 
@@ -111,14 +112,14 @@ The live-tree scanner has a known unrelated `ai-scratch/` false positive. Run
 `python3 scripts/check-public-safety.py` in a clean disposable local clone that
 contains the pending script/test diff; expected exit 0.
 
-- [ ] **Step 5: Probe fresh-destination behavior with real chezmoi**
+- [x] **Step 5: Probe fresh-destination behavior with real chezmoi**
 
 Use `mktemp -d` for destination and persistent state, pre-create no managed
 parent directories, then invoke the updated wrapper with environment overrides
 and one nested exact managed target. Assert the target is created. Never point
 this probe at live HOME.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/chezmoi-compose tests/test-compose.sh docs/superpowers/plans/2026-07-19-targeted-apply-parent-dirs.md

@@ -191,13 +191,13 @@ classify_source() {
 $status_out
 EOF
   if [ "${#plain_batch[@]}" -gt 0 ]; then
-    run_chezmoi "$source" apply -- "${plain_batch[@]}"
+    run_chezmoi "$source" apply --parent-dirs -- "${plain_batch[@]}"
     for abs in "${plain_batch[@]}"; do
       sync_applied[${#sync_applied[@]}]="$abs"
     done
   fi
   if [ "${#force_batch[@]}" -gt 0 ]; then
-    run_chezmoi "$source" apply --force -- "${force_batch[@]}"
+    run_chezmoi "$source" apply --force --parent-dirs -- "${force_batch[@]}"
     for abs in "${force_batch[@]}"; do
       sync_applied[${#sync_applied[@]}]="$abs"
     done
@@ -236,7 +236,7 @@ resolve_decisions() {
     IFS= read -r choice
     case "$choice" in
       o)
-        run_chezmoi "$source" apply --force -- "$abs"
+        run_chezmoi "$source" apply --force --parent-dirs -- "$abs"
         sync_applied[${#sync_applied[@]}]="$abs"
         ;;
       i)
@@ -325,10 +325,10 @@ apply_targets_cmd() {
     fi
   done
   if [ "${#base_batch[@]}" -gt 0 ]; then
-    run_chezmoi "${sources[0]}" apply -- "${base_batch[@]}"
+    run_chezmoi "${sources[0]}" apply --parent-dirs -- "${base_batch[@]}"
   fi
   if [ "${#overlay_batch[@]}" -gt 0 ]; then
-    run_chezmoi "${sources[1]}" apply -- "${overlay_batch[@]}"
+    run_chezmoi "${sources[1]}" apply --parent-dirs -- "${overlay_batch[@]}"
   fi
 }
 
