@@ -13,20 +13,24 @@ fresh-machine reproducibility.
 
 ## Design
 
-Keep exact managed-target validation and base/overlay batching unchanged. Add
-chezmoi's native `--parent-dirs` option to both targeted apply invocations:
+Keep exact managed-target validation, drift classification, decision flow, and
+base/overlay batching unchanged. Add chezmoi's native `--parent-dirs` option to
+every wrapper-generated apply invocation:
 
 ```text
-chezmoi apply --parent-dirs -- <validated-targets>
+chezmoi apply --parent-dirs -- <clean-targets>
+chezmoi apply --force --parent-dirs -- <forced-or-approved-targets>
 ```
 
-Chezmoi, rather than the wrapper, creates required parents and applies any
-managed parent attributes. The wrapper must not call `mkdir -p`: doing so could
-create security-sensitive directories with generic umask-derived modes.
+This covers automatic clean sync batches, force-sync batches, interactive
+overwrite decisions, and the explicit targeted `apply` command. Chezmoi, rather
+than the wrapper, creates required parents and applies any managed parent
+attributes. The wrapper must not call `mkdir -p`: doing so could create
+security-sensitive directories with generic umask-derived modes.
 
 Directory targets remain unsupported because ownership routing is based on the
 exact absolute file/symlink lists returned by each source's `chezmoi managed`.
-Routine `sync`, `diff`, `verify`, and preflight behavior do not change.
+`diff`, `verify`, preflight, pull, and drift-decision semantics do not change.
 
 ## Error behavior
 
@@ -40,11 +44,13 @@ Routine `sync`, `diff`, `verify`, and preflight behavior do not change.
 
 Extend `tests/test-compose.sh` so its fake chezmoi:
 
-1. records `apply --parent-dirs -- <targets>`;
-2. rejects a targeted file whose parent is absent when `--parent-dirs` is
+1. records clean `apply --parent-dirs -- <targets>` and forced
+   `apply --force --parent-dirs -- <targets>` calls;
+2. rejects any file apply whose parent is absent when `--parent-dirs` is
    missing;
-3. creates the missing parent and target when the flag is present;
-4. verifies base and overlay batches both use the flag;
+3. creates missing parents and targets when the flag is present;
+4. verifies sync, interactive overwrite, base, and overlay batches all use the
+   flag;
 5. keeps unmanaged-target rejection unchanged.
 
 Verify with:
@@ -59,6 +65,7 @@ python3 tests/test-public-safety.py
 
 ## Acceptance
 
-A targeted apply of a newly introduced nested managed file succeeds against an
-empty destination tree without any manual directory creation, while exact
-ownership routing and public-safety gates remain green.
+Both routine sync and targeted apply can install newly introduced nested
+managed files into an empty destination tree without manual directory
+creation, while drift decisions, exact ownership routing, and public-safety
+gates remain green.
