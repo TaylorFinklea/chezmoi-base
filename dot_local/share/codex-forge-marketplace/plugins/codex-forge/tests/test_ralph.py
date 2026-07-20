@@ -1,3 +1,4 @@
+import io
 import os
 from pathlib import Path
 import signal
@@ -30,6 +31,34 @@ BRIEF = Brief(
     (Phase("Implement", "senior", "python3 -m unittest"),
      Phase("Document", "junior", "python3 -m py_compile")), "ralph",
 )
+
+
+class FakePopen:
+    def __init__(self, *, running: bool):
+        self.pid = 4242
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.returncode = None if running else 0
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminate_calls += 1
+        self.returncode = 0
+
+    def kill(self):
+        self.kill_calls += 1
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
 
 
 class RalphTests(unittest.TestCase):
@@ -124,7 +153,15 @@ class RalphTests(unittest.TestCase):
 
     def test_prepare_uses_exact_codex_preflight_and_owned_commit(self):
         log = self.root / "ralph.log"
-        self.ralph.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RALPH_LOG\"\nexit 0\n")
+        self.ralph.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$RALPH_LOG\"\n"
+            "if [ \"${1:-}\" = \"-n\" ]; then\n"
+            "  test ! -e .docs/ai/phases/add-cached-search-spec.md\n"
+            "  ! grep -q '^- \\[ \\]' .docs/ai/current-state.md\n"
+            "fi\n"
+            "exit 0\n"
+        )
         self.ralph.chmod(0o755)
         with mock.patch.dict(os.environ, self.env(RALPH_LOG=str(log)), clear=False):
             preparation = prepare_ralph_dispatch(BRIEF, self.repo, date="2026-07-20")
@@ -164,6 +201,45 @@ class RalphTests(unittest.TestCase):
                 prepare_ralph_dispatch(BRIEF, self.repo)
         self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
         self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
+        self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+
+    def test_post_commit_rev_parse_failure_rolls_back_only_owned_plan(self):
+        original_run = ralph_module._run
+        committed = False
+        failed = False
+
+        def fail_rev_parse(args, cwd, **kwargs):
+            nonlocal committed, failed
+            result = original_run(args, cwd, **kwargs)
+            if list(args[:2]) == ["git", "commit"]:
+                committed = True
+            elif committed and not failed and list(args) == ["git", "rev-parse", "HEAD"]:
+                failed = True
+                raise RalphError("injected post-commit rev-parse failure")
+            return result
+
+        before = {path: path.read_bytes() for path in (self.repo / ".docs/ai").glob("*.md")}
+        with mock.patch.dict(os.environ, self.env(), clear=False), \
+             mock.patch.object(ralph_module, "_run", side_effect=fail_rev_parse):
+            with self.assertRaisesRegex(RalphError, "post-commit rev-parse"):
+                prepare_ralph_dispatch(BRIEF, self.repo)
+        self.assertTrue(failed)
+        self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+        self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+
+    def test_post_commit_preparation_construction_failure_rolls_back_only_owned_plan(self):
+        before = {path: path.read_bytes() for path in (self.repo / ".docs/ai").glob("*.md")}
+        with mock.patch.dict(os.environ, self.env(), clear=False), \
+             mock.patch.object(ralph_module, "RalphPreparation", side_effect=RuntimeError("injected preparation failure")):
+            with self.assertRaisesRegex(RuntimeError, "injected preparation failure"):
+                prepare_ralph_dispatch(BRIEF, self.repo)
+        self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+        self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
         self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
 
     def test_spawn_failure_rolls_back_only_before_spawn(self):
@@ -207,24 +283,46 @@ class RalphTests(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(spawned[0], 0)
 
-    def test_normal_backend_reaps_owned_descendants(self):
-        child_pid = self.root / "child.pid"
-        self.ralph.write_text("#!/bin/sh\n[ \"${1:-}\" = \"-n\" ] && exit 0\nsleep 30 &\necho $! > \"$RALPH_CHILD_PID\"\nexit 0\n")
-        self.ralph.chmod(0o755)
-        with mock.patch.dict(os.environ, self.env(RALPH_CHILD_PID=str(child_pid)), clear=False), \
-             mock.patch.object(ralph_module, "KILL_GRACE_SECONDS", 0.05):
-            result = launch_ralph_dispatch(self.prepare())
-        self.assertEqual(result.exit_code, 0)
-        pid = int(child_pid.read_text())
-        deadline = time.monotonic() + 1
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.02)
-        else:
-            self.fail("backend child survived its owned process group cleanup")
+    def test_identity_acquisition_failure_uses_popen_handle_without_group_signal(self):
+        child = FakePopen(running=True)
+        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
+             mock.patch.object(ralph_module, "_identity", return_value=None), \
+             mock.patch.object(ralph_module.os, "killpg") as killpg:
+            with self.assertRaisesRegex(RalphError, "identity could not be established"):
+                launch_ralph_dispatch(self.prepare())
+        self.assertEqual(child.terminate_calls, 1)
+        self.assertEqual(child.kill_calls, 0)
+        self.assertEqual(killpg.call_args_list, [])
+        self.assertNotEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+
+    def test_exited_child_identity_failure_never_signals_group(self):
+        child = FakePopen(running=False)
+        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
+             mock.patch.object(ralph_module, "_identity", return_value=None), \
+             mock.patch.object(ralph_module.os, "killpg") as killpg:
+            with self.assertRaisesRegex(RalphError, "identity could not be established"):
+                launch_ralph_dispatch(self.prepare())
+        self.assertEqual(child.terminate_calls, 0)
+        self.assertEqual(killpg.call_args_list, [])
+
+    def test_pid_reuse_during_exception_cleanup_never_signals_foreign_group(self):
+        child = FakePopen(running=True)
+        calls = 0
+
+        def identities(pid):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ProcessIdentity(pid, "owned", pid)
+            return ProcessIdentity(pid, "reused", pid + 1)
+
+        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
+             mock.patch.object(ralph_module, "_identity", side_effect=identities), \
+             mock.patch.object(ralph_module.os, "killpg") as killpg:
+            with self.assertRaisesRegex(RuntimeError, "state persistence failed"):
+                launch_ralph_dispatch(self.prepare(), on_spawn=lambda _: (_ for _ in ()).throw(RuntimeError("state persistence failed")))
+        self.assertEqual(child.terminate_calls, 1)
+        self.assertEqual(killpg.call_args_list, [])
 
     def test_recovery_rejects_restored_and_reused_pids(self):
         record = {"pid": 20, "pgid": 20, "start": "old"}
@@ -248,6 +346,16 @@ class RalphTests(unittest.TestCase):
         with mock.patch.object(ralph_module.os, "killpg") as killpg:
             with self.assertRaises(RalphError):
                 cancel_owned_ralph(record, grace_seconds=0, identity=lambda _: None)
+        self.assertEqual(killpg.call_args_list, [])
+
+    def test_cancellation_revalidates_before_term_and_refuses_reused_group(self):
+        process = ProcessIdentity(41, "start", 41)
+        reused = ProcessIdentity(41, "reused", 42)
+        record = {"pid": 41, "pgid": 41, "start": "start"}
+        identities = iter((process, reused))
+        with mock.patch.object(ralph_module.os, "killpg") as killpg:
+            with self.assertRaises(RalphError):
+                cancel_owned_ralph(record, identity=lambda _: next(identities))
         self.assertEqual(killpg.call_args_list, [])
 
     def test_output_is_bounded(self):

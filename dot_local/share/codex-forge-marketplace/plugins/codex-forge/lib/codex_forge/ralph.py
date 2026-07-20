@@ -267,19 +267,37 @@ def _run(args: Sequence[str], cwd: Path, *, timeout: float = 30, check: bool = F
     return result
 
 
-def _rollback(preparation: RalphPreparation) -> None:
+def _head_is_owned_planning_commit(cwd: Path, before_head: str, paths: Sequence[str],
+                                  planning_subject: str, planning_commit: str | None) -> bool:
+    head = _run(["git", "rev-parse", "HEAD"], cwd, check=True).stdout.strip()
+    if planning_commit is not None:
+        return head == planning_commit
+    parent = _run(["git", "rev-parse", f"{head}^"], cwd, check=True).stdout.strip()
+    changed = _run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", head],
+                   cwd, check=True).stdout.splitlines()
+    subject = _run(["git", "log", "-1", "--format=%s", head], cwd, check=True).stdout.strip()
+    return parent == before_head and set(changed) == set(paths) and subject == planning_subject
+
+
+def _rollback_planning_commit(cwd: Path, snapshots: Sequence[FileSnapshot], paths: Sequence[str],
+                              before_head: str, planning_subject: str,
+                              planning_commit: str | None) -> None:
     rollback_error: Exception | None = None
     try:
-        head = _run(["git", "rev-parse", "HEAD"], preparation.cwd, check=True).stdout.strip()
-        if head == preparation.planning_commit:
-            _run(["git", "reset", "--soft", preparation.before_head], preparation.cwd, check=True)
-            _run(["git", "reset", "--", *preparation.paths], preparation.cwd, check=True)
+        if _head_is_owned_planning_commit(cwd, before_head, paths, planning_subject, planning_commit):
+            _run(["git", "reset", "--soft", before_head], cwd, check=True)
+            _run(["git", "reset", "--", *paths], cwd, check=True)
     except Exception as exc:
         rollback_error = exc
     finally:
-        _restore(preparation.cwd, preparation.snapshots)
+        _restore(cwd, snapshots)
     if rollback_error is not None:
         raise RalphError("Forge planning rollback could not be completed") from rollback_error
+
+
+def _rollback(preparation: RalphPreparation) -> None:
+    _rollback_planning_commit(preparation.cwd, preparation.snapshots, preparation.paths,
+                              preparation.before_head, "", preparation.planning_commit)
 
 
 def _restore_preparation_failure(cwd: Path, snapshots: Sequence[FileSnapshot], paths: Sequence[str]) -> None:
@@ -302,7 +320,19 @@ def prepare_ralph_dispatch(brief: Brief, cwd: Path, *, date: str | None = None) 
     paths = (*FORGE_PATHS, _phase_spec_path(brief))
     snapshots = _snapshot(cwd, paths)
     before_head = _run(["git", "rev-parse", "HEAD"], cwd, check=True).stdout.strip()
+    planning_subject = f"plan: prepare Forge Ralph execution for {brief.goal}"
+    committed = False
+    planning_commit: str | None = None
     try:
+        status_before = _run(["git", "status", "--porcelain"], cwd, check=True).stdout
+        preflight = _run(["ralph", "-n", "0", "-t", "codex"], cwd, check=False)
+        if preflight.returncode:
+            detail = (preflight.stderr or preflight.stdout).strip()
+            raise RalphError("Ralph preflight failed" + (f": {detail}" if detail else ""))
+        if _snapshot(cwd, paths) != snapshots:
+            raise RalphError("Ralph preflight modified Forge handoff bytes")
+        if _run(["git", "status", "--porcelain"], cwd, check=True).stdout != status_before:
+            raise RalphError("Ralph preflight modified the worktree")
         current = _render_current_state(_read_structural(_safe_path(cwd, FORGE_PATHS[0])), brief.phases)
         roadmap = _render_roadmap(_read_structural(_safe_path(cwd, FORGE_PATHS[1])), brief)
         generated = _render_phase_spec(brief, date)
@@ -311,27 +341,21 @@ def prepare_ralph_dispatch(brief: Brief, cwd: Path, *, date: str | None = None) 
             path = _safe_path(cwd, relative_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8", newline="")
-        baseline = _snapshot(cwd, paths)
-        status_before = _run(["git", "status", "--porcelain"], cwd, check=True).stdout
-        preflight = _run(["ralph", "-n", "0", "-t", "codex"], cwd, check=False)
-        if preflight.returncode:
-            detail = (preflight.stderr or preflight.stdout).strip()
-            raise RalphError("Ralph preflight failed" + (f": {detail}" if detail else ""))
-        if _snapshot(cwd, paths) != baseline:
-            raise RalphError("Ralph preflight modified Forge handoff bytes")
-        if _run(["git", "status", "--porcelain"], cwd, check=True).stdout != status_before:
-            raise RalphError("Ralph preflight modified the worktree")
         _run(["git", "add", "--", *paths], cwd, check=True)
         staged = _run(["git", "diff", "--cached", "--name-only", "--", *paths], cwd, check=True)
         if set(staged.stdout.splitlines()) != set(paths):
             raise RalphError("Forge planning commit contains unexpected files")
-        _run(["git", "commit", "-m", f"plan: prepare Forge Ralph execution for {brief.goal}"], cwd, check=True)
+        _run(["git", "commit", "-m", planning_subject], cwd, check=True)
+        committed = True
         planning_commit = _run(["git", "rev-parse", "HEAD"], cwd, check=True).stdout.strip()
         if not planning_commit:
             raise RalphError("Forge planning commit could not be identified")
         return RalphPreparation(cwd, tuple(paths), snapshots, before_head, planning_commit)
     except Exception:
-        _restore_preparation_failure(cwd, snapshots, paths)
+        if committed:
+            _rollback_planning_commit(cwd, snapshots, paths, before_head, planning_subject, planning_commit)
+        else:
+            _restore_preparation_failure(cwd, snapshots, paths)
         raise
 
 
@@ -408,32 +432,70 @@ def _group_exists(pgid: int) -> bool:
         return False
 
 
-def _terminate_group(pgid: int, child: subprocess.Popen[bytes], *, grace_seconds: float = KILL_GRACE_SECONDS) -> None:
+def _same_process_identity(expected: ProcessIdentity, observed: ProcessIdentity | None) -> bool:
+    return (observed is not None and expected.pid == observed.pid and expected.start == observed.start and
+            expected.pgid == observed.pgid)
+
+
+def _matching_process_identity(expected: ProcessIdentity) -> ProcessIdentity | None:
+    observed = _identity(expected.pid)
+    return observed if _same_process_identity(expected, observed) else None
+
+
+def _terminate_child(child: subprocess.Popen[bytes], *, grace_seconds: float) -> None:
+    """Use the Popen handle only when group ownership cannot be revalidated."""
     try:
-        if _group_exists(pgid):
+        if child.poll() is None:
+            child.terminate()
             try:
-                os.killpg(pgid, signal.SIGTERM)
-            except OSError:
-                pass
-            else:
-                deadline = time.monotonic() + max(0.01, grace_seconds)
-                while time.monotonic() < deadline:
-                    if not _group_exists(pgid):
-                        break
-                    time.sleep(0.02)
-                else:
-                    if _group_exists(pgid):
-                        try:
-                            os.killpg(pgid, signal.SIGKILL)
-                        except OSError:
-                            pass
+                child.wait(timeout=max(0.01, grace_seconds))
+            except (subprocess.TimeoutExpired, OSError):
+                if child.poll() is None:
+                    child.kill()
+                    try:
+                        child.wait(timeout=max(0.01, grace_seconds))
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+    except OSError:
+        pass
+
+
+def _terminate_owned_group(expected: ProcessIdentity, child: subprocess.Popen[bytes], *,
+                            grace_seconds: float = KILL_GRACE_SECONDS) -> None:
+    """Signal a group only while its leader still matches the spawned identity."""
+    current = _matching_process_identity(expected)
+    if current is None:
+        _terminate_child(child, grace_seconds=grace_seconds)
+        return
+    try:
+        if not _group_exists(current.pgid):
+            _terminate_child(child, grace_seconds=grace_seconds)
+            return
+        # Check again immediately before TERM: PID/PGID reuse must never target
+        # an unrelated group.
+        current = _matching_process_identity(expected)
+        if current is None:
+            _terminate_child(child, grace_seconds=grace_seconds)
+            return
+        os.killpg(current.pgid, signal.SIGTERM)
+        deadline = time.monotonic() + max(0.01, grace_seconds)
+        while time.monotonic() < deadline:
+            current = _matching_process_identity(expected)
+            if current is None or not _group_exists(current.pgid):
+                return
+            time.sleep(0.02)
+        # Revalidate immediately before KILL as well; when the leader vanished
+        # or was reused, direct Popen cleanup is the only safe remaining action.
+        current = _matching_process_identity(expected)
+        if current is None:
+            _terminate_child(child, grace_seconds=grace_seconds)
+            return
+        if _group_exists(current.pgid):
+            os.killpg(current.pgid, signal.SIGKILL)
+    except OSError:
+        _terminate_child(child, grace_seconds=grace_seconds)
     finally:
-        # Reap even when the group already disappeared; otherwise a failed
-        # post-spawn callback can leave a zombie Popen object behind.
-        try:
-            child.wait(timeout=max(0.01, grace_seconds))
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        _terminate_child(child, grace_seconds=grace_seconds)
 
 
 def _capture_pipe(stream: Any, buffer: list[bytes]) -> None:
@@ -460,16 +522,17 @@ def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
 
     # This is the transaction boundary: after Popen returns no Git rewind is
     # permitted, including if a later reader or identity operation fails.
-    if on_started:
-        on_started()
     stdout: list[bytes] = [b""]
     stderr: list[bytes] = [b""]
     readers = [
         threading.Thread(target=_capture_pipe, args=(child.stdout, stdout), daemon=True),
         threading.Thread(target=_capture_pipe, args=(child.stderr, stderr), daemon=True),
     ]
+    identity: ProcessIdentity | None = None
 
     try:
+        if on_started:
+            on_started()
         for reader in readers:
             reader.start()
         identity = _identity(child.pid)
@@ -478,9 +541,6 @@ def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
         if on_spawn:
             on_spawn(identity)
         exit_code = child.wait()
-        # The dedicated session is owned by this launch. A backend that exits
-        # while leaving descendants behind must not leave an uncontrolled group.
-        _terminate_group(identity.pgid, child, grace_seconds=KILL_GRACE_SECONDS)
         for reader in readers:
             if reader.is_alive():
                 reader.join(timeout=KILL_GRACE_SECONDS)
@@ -494,7 +554,10 @@ def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
                 on_output("stderr", err)
         return RalphResult(exit_code, out, err)
     except Exception:
-        _terminate_group(child.pid, child, grace_seconds=KILL_GRACE_SECONDS)
+        if identity is None:
+            _terminate_child(child, grace_seconds=KILL_GRACE_SECONDS)
+        else:
+            _terminate_owned_group(identity, child, grace_seconds=KILL_GRACE_SECONDS)
         raise
     finally:
         _close_pipes(child)
@@ -538,6 +601,11 @@ def cancel_owned_ralph(record: Mapping[str, Any] | None, *, grace_seconds: float
                        identity: Callable[[int], ProcessIdentity | None] = _identity) -> dict[str, Any]:
     if not isinstance(record, Mapping) or type(record.get("pid")) is not int:
         raise RalphError("Ralph instance is not owned")
+    # Acquire then immediately reacquire identity before TERM so no intervening
+    # PID/PGID reuse can redirect a group signal.
+    current = identity(record["pid"])
+    if not _same_identity(record, current):
+        raise RalphError("Ralph PID identity no longer matches; refusing to signal")
     current = identity(record["pid"])
     if not _same_identity(record, current):
         raise RalphError("Ralph PID identity no longer matches; refusing to signal")
