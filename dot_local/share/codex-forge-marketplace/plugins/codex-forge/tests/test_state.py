@@ -126,6 +126,24 @@ class StateTests(unittest.TestCase):
             with self.subTest(operation=operation.__name__), self.assertRaises(StateError):
                 operation("s")
 
+    def test_root_symlink_is_rejected_by_create(self):
+        real_root = Path(self.tmp.name) / "real-state"
+        real_root.mkdir()
+        self.root.symlink_to(real_root, target_is_directory=True)
+        with self.assertRaises(StateError):
+            self.store.create("s", self.cwd, None)
+        self.assertEqual(list(real_root.iterdir()), [])
+
+    def test_root_symlink_is_rejected_by_replace(self):
+        state = self.store.create("s", self.cwd, None)
+        replacement = transition(state, "freeze")
+        real_root = Path(self.tmp.name) / "real-state"
+        self.root.rename(real_root)
+        self.root.symlink_to(real_root, target_is_directory=True)
+        with self.assertRaises(StateError):
+            self.store.replace(replacement)
+        self.assertEqual(StateStore(real_root, "0.1.0").load("s"), state)
+
     def test_loaded_and_replaced_bindings_must_be_real_directories(self):
         state = self.store.create("s", self.cwd, self.repo)
         path = self.store.path_for("s")
