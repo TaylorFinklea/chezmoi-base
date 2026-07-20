@@ -15,7 +15,7 @@ make_repo() {
   mkdir -p "$destination/.docs/ai"
   git -C "$destination" init -q
   git -C "$destination" config user.name "Forge Test"
-  git -C "$destination" config user.email "forge@example.invalid"
+  git -C "$destination" config user.email "forge-test"
   cat > "$destination/.docs/ai/current-state.md" <<'EOF'
 # Current State
 

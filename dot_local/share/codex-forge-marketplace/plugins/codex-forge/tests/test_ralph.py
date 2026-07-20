@@ -75,7 +75,7 @@ class RalphTests(unittest.TestCase):
             b"# Roadmap\n\n### Now\n- [ ] Existing\n\n### Next\n- Later\n")
         subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
         subprocess.run(["git", "config", "user.name", "Forge Test"], cwd=self.repo, check=True)
-        subprocess.run(["git", "config", "user.email", "forge@example.invalid"], cwd=self.repo, check=True)
+        subprocess.run(["git", "config", "user.email", "forge-test"], cwd=self.repo, check=True)
         subprocess.run(["git", "add", ".docs/ai"], cwd=self.repo, check=True)
         subprocess.run(["git", "commit", "-qm", "baseline"], cwd=self.repo, check=True)
         self.bin = self.root / "bin"
