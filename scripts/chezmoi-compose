@@ -153,10 +153,11 @@ cosmetic_diff() {
 }
 
 classify_source() {
-  local source=$1 status_out line code target abs plain_batch force_batch
+  local source=$1 status_out line code target abs plain_batch force_batch scripts_pending
 
   plain_batch=()
   force_batch=()
+  scripts_pending=0
   status_out=$(run_chezmoi "$source" status)
   while IFS= read -r line; do
     if [ -z "$line" ]; then
@@ -165,6 +166,10 @@ classify_source() {
     code=${line:0:2}
     target=${line:3}
     abs="$DESTINATION/$target"
+    if [ "$code" = ' R' ] && [[ "$target" == .chezmoiscripts/* ]]; then
+      scripts_pending=1
+      continue
+    fi
     if is_runtime_skip "$target"; then
       sync_skipped[${#sync_skipped[@]}]="$target"
       continue
@@ -201,6 +206,9 @@ EOF
     for abs in "${force_batch[@]}"; do
       sync_applied[${#sync_applied[@]}]="$abs"
     done
+  fi
+  if [ "$scripts_pending" -eq 1 ]; then
+    run_chezmoi "$source" apply --include scripts
   fi
 }
 
