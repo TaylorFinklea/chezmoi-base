@@ -113,18 +113,40 @@ class CLITests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(body["code"], "binding_mismatch")
 
-    def test_complete_requires_terminal_verification_and_fail_stores_bounded_reason(self):
+    def test_complete_rejects_executing_without_terminal_verification(self):
         result, _ = self.run_cli("begin")
         self.assertEqual(result.returncode, 0)
         store = StateStore(self.data, "0.1.0")
         state = store.load(self.session)
         state = transition(transition(transition(state, "freeze"), "approve_direct"), "begin")
         store.replace(state)
-        # Completion has no model payload; terminal verification is recorded by
-        # the later direct-execution task before this transition.
+
         result, body = self.run_cli("complete")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "verification_not_terminal")
+        self.assertEqual(store.load(self.session).status, "executing")
+
+    def test_complete_rejects_ralph_running_without_terminal_verification(self):
+        session = "ralph-complete-session"
+        env = {**self.env, "CODEX_FORGE_SESSION_ID": session}
+        heartbeat = self.data / ("heartbeat-" + hashlib.sha256(session.encode()).hexdigest() + ".json")
+        heartbeat.write_text(json.dumps({"plugin_version": "0.1.0", "session_id": session,
+                                         "cwd": str(self.cwd), "timestamp": time.time()}))
+        result, _ = self.run_cli("begin", env=env)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(body["status"], "completed")
+        store = StateStore(self.data, "0.1.0")
+        state = store.load(session)
+        state = transition(transition(transition(state, "freeze"), "approve_ralph"), "ralph_start")
+        store.replace(state)
+
+        result, body = self.run_cli("complete", env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "verification_not_terminal")
+        self.assertEqual(store.load(session).status, "ralph_running")
+
+    def test_fail_stores_bounded_reason(self):
+        result, _ = self.run_cli("begin")
+        self.assertEqual(result.returncode, 0)
 
         fail_session = "fail-session"
         fail_env = {**self.env, "CODEX_FORGE_SESSION_ID": fail_session}

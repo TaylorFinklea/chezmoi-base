@@ -334,9 +334,9 @@ def status() -> dict[str, Any]:
 def complete() -> dict[str, Any]:
     session, root = _env()
     state, _, _ = _load_bound(root, session)
-    if state.status not in {"executing", "ralph_running"}:
-        raise CLIError("verification_not_terminal", "completion requires an executing Forge session")
-    next_state = transition(state, "complete")
+    if state.status in {"executing", "ralph_running"}:
+        raise CLIError("verification_not_terminal", "completion requires terminal verification")
+    raise CLIError("verification_not_terminal", "completion requires an executing Forge session")
     try:
         _store(root).replace(next_state)
     except (StateError, ValueError, OSError) as exc:
