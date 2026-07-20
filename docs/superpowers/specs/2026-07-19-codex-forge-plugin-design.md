@@ -215,9 +215,10 @@ sandbox or Git review.
 - every phase has an exact Verify command;
 - the installed `ralph` supports the required Codex backend.
 
-After approval, the helper may write the Forge-owned planning files, create one
-planning commit, and launch real `ralph -n 0 -t codex`. It must never pass
-`-L`.
+After approval, the helper runs real `ralph -n 0 -t codex` as a zero-iteration
+preflight. Only after that passes may it write the Forge-owned planning files,
+create one planning commit, and launch real `ralph -t codex`. Neither invocation
+may pass `-L`.
 
 Before child spawn, failures restore byte-exact snapshots of only Forge-owned
 planning files and remove only the helper's own planning commit when safe.

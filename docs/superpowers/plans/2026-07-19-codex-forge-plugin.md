@@ -17,7 +17,7 @@
 - No repository mutation before nonce approval.
 - Unknown local tools fail closed during shaping and frozen states.
 - Python helper uses only the standard library; no runtime package installation.
-- Ralph requires clean Git, empty Plan, at least two exact-Verify non-Lead phases, and launches `ralph -n 0 -t codex`; never pass `-L`.
+- Ralph requires clean Git, empty Plan, at least two exact-Verify non-Lead phases, runs `ralph -n 0 -t codex` preflight, then launches `ralph -t codex`; never pass `-L` to either invocation.
 - Pre-spawn rollback restores only Forge-owned planning files; never rewind commits after spawn.
 - Preserve unrelated Codex runtime configuration and existing Atuin/Neovim drift.
 - Hook trust stays a native, explicit Codex user action.
@@ -459,13 +459,15 @@ Parse `.docs/ai/current-state.md` structurally, require an empty Plan, render ex
 
 - [ ] **Step 6: Implement launch and rollback boundary**
 
-Use subprocess argument arrays for:
+Use subprocess argument arrays for real preflight and launch:
 
 ```text
 ralph -n 0 -t codex
+ralph -t codex
 ```
 
-Create one planning commit before spawn. On pre-spawn failure, restore exact snapshots and remove only that planning commit when HEAD still matches. After successful spawn, record PID/process group and never reset Git.
+The zero-iteration preflight occurs before planning writes. Create one planning
+commit before the actual launch spawn. On pre-spawn failure, restore exact snapshots and remove only that planning commit when HEAD still matches. After successful spawn, record PID/process group and never reset Git.
 
 - [ ] **Step 7: Implement status and cancellation**
 
