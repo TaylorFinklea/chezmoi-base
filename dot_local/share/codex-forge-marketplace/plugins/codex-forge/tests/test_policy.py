@@ -26,7 +26,8 @@ class PolicyTests(unittest.TestCase):
         rejected = (
             "git status | cat", "git status && touch x", "git diff > out", "git $(echo status)",
             "cat <<EOF\nsecret\nEOF", "rm -f x", "mv x y", "cp x y", "install x y", "tee x",
-            "python3 -c 'open(\"x\", \"w\").write(\"x\")'", "node -e process.exit()",
+            "python3 -c 'open(\"x\", \"w\").write(\"x\")'", "python3 /repo/hooks/forge_hook.py status",
+            "/repo/hooks/forge_hook.py status", "node -e process.exit()",
             "ruby -e 'puts 1'", "perl -e 'print 1'", "git commit -am x", "git reset --hard",
         )
         for command in rejected:

@@ -69,6 +69,19 @@ def _write_record(root: Path, prefix: str, session: str, payload: Mapping[str, A
         raise CLIError("state_write_failed", "Forge control state could not be persisted") from exc
 
 
+def _delete_record(root: Path, prefix: str, session: str) -> None:
+    try:
+        _record_store(root).delete(_record(root, prefix, session))
+    except (StateError, OSError) as exc:
+        raise CLIError("state_cleanup_failed", "Forge control state could not be cleaned up") from exc
+
+
+def _cleanup_freeze_records(root: Path, session: str) -> None:
+    # These are the only records freeze owns; never delete by glob or directory.
+    _delete_record(root, "approval-", session)
+    _delete_record(root, "brief-", session)
+
+
 def _now() -> float:
     return time.time()
 
@@ -225,8 +238,15 @@ def freeze() -> dict[str, Any]:
     except ValueError as exc:
         raise CLIError("invalid_brief", str(exc)) from exc
     digest = brief_digest(brief)
-    if _read_record(root, "brief-", session) is not None or _read_record(root, "approval-", session) is not None:
-        raise CLIError("already_frozen", "an immutable brief already exists")
+    existing_brief = _read_record(root, "brief-", session)
+    existing_approval = _read_record(root, "approval-", session)
+    if existing_brief is not None or existing_approval is not None:
+        # A shaping session can only have these records after an interrupted
+        # freeze. Clean that exact session-owned pair before retrying.
+        try:
+            _cleanup_freeze_records(root, session)
+        except CLIError as exc:
+            raise CLIError("freeze_recovery_required", "an interrupted freeze could not be recovered") from exc
     issued = _now()
     nonce = secrets.token_hex(32)
     approval = {"nonce": nonce, "session_id": session, "cwd": str(cwd),
@@ -238,6 +258,12 @@ def freeze() -> dict[str, Any]:
         frozen = transition(state, "freeze")
         _store(root).replace(frozen)
     except (CLIError, StateError, ValueError, OSError) as exc:
+        try:
+            _cleanup_freeze_records(root, session)
+        except CLIError as cleanup_exc:
+            # Leave shaping state fail closed; a later freeze retries the same
+            # exact cleanup rather than treating the residue as a valid freeze.
+            raise CLIError("freeze_recovery_required", "an interrupted freeze could not be recovered") from cleanup_exc
         raise CLIError("freeze_failed", "immutable brief and approval could not be persisted") from exc
     return {"ok": True, "status": "frozen", "brief_digest": digest, "nonce": nonce,
             "expires_at": approval["expires_at"]}

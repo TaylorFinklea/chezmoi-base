@@ -23,11 +23,12 @@ hook-controlled session.
 4. Require a current hook heartbeat before each control-CLI mutation. Refuse
    to continue if the heartbeat or the exact cwd/repository binding is absent or
    stale. Never accept model-provided session or data identity.
-5. Invoke the CLI only through this skill's installed canonical path:
-   `${PLUGIN_ROOT}/bin/codex-forge`. Do not substitute `python`, a PATH lookup,
-   a copied helper, or a path under `hooks/`.
-6. Freeze by sending the complete JSON brief to
-   `${PLUGIN_ROOT}/bin/codex-forge freeze`. Do not claim a freeze from prose.
+5. Resolve the CLI relative to this loaded SKILL.md: `../../bin/codex-forge`.
+   Invoke that installed canonical path directly. Do not substitute `python`, a
+   PATH lookup, a copied helper, a model-visible `PLUGIN_ROOT` variable, or a
+   path under `hooks/`.
+6. Freeze by sending the complete JSON brief to `../../bin/codex-forge freeze`.
+   Do not claim a freeze from prose.
    The CLI validates and digests the brief and creates the single-use nonce.
 7. Present exactly the nonce choices emitted by the CLI: `approve <nonce> direct`, `approve <nonce> ralph`, `revise <nonce>`, or `cancel <nonce>`.
    Do not accept prose-only approval, altered nonce text, or an omitted
@@ -40,9 +41,10 @@ hook-controlled session.
 
 ## Procedure
 
-- Use `begin` only after recon and only with hook-injected environment.
+- Resolve `../../bin/codex-forge` from this skill file before every invocation;
+  use `begin` only after recon and only with hook-injected environment.
 - Use `question` with one JSON object at a time, never shell interpolation.
-- Build the complete brief, then pipe that JSON unchanged to `freeze`.
+- Build the complete brief, then pipe that JSON unchanged to `../../bin/codex-forge freeze`.
 - End the frozen turn by printing only the brief summary and the four exact
   approve/revise/cancel command choices. Never print a made-up nonce.
 - After the user chooses, let the hook-confirmed state transition determine

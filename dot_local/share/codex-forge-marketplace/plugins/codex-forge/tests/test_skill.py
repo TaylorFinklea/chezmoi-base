@@ -13,7 +13,7 @@ class SkillTests(unittest.TestCase):
             "**5 is the hard maximum**", "no writes", "freeze",
             "approve <nonce> direct", "approve <nonce> ralph",
             "revise <nonce>", "cancel <nonce>", "direct", "Ralph",
-            "current hook heartbeat", "${PLUGIN_ROOT}/bin/codex-forge",
+            "current hook heartbeat", "../../bin/codex-forge", "loaded SKILL.md",
             "prose-only approval",
         ):
             with self.subTest(required=required):

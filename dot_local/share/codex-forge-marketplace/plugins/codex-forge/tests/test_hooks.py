@@ -67,17 +67,28 @@ class HookTests(unittest.TestCase):
             "permissionDecisionReason": "Forge shaping blocks writer tools until nonce approval."
         }})
         helper = str(self.plugin_root / "bin" / "codex-forge")
-        allowed = handle_hook(self.event("PreToolUse", tool_name="Bash",
-                                          tool_input={"command": f"{helper} status"}), self.env)
-        updated = allowed.output["hookSpecificOutput"]["updatedInput"]
-        self.assertEqual(updated["env"], {"CODEX_FORGE_DATA": str(self.data), "CODEX_FORGE_SESSION_ID": self.session})
+        for subcommand in ("begin", "question", "freeze", "status", "complete", "fail"):
+            with self.subTest(subcommand=subcommand):
+                allowed = handle_hook(self.event("PreToolUse", tool_name="Bash",
+                                                  tool_input={"command": f"{helper} {subcommand}"}), self.env)
+                updated = allowed.output["hookSpecificOutput"]["updatedInput"]
+                self.assertEqual(updated["env"], {"CODEX_FORGE_DATA": str(self.data), "CODEX_FORGE_SESSION_ID": self.session})
+        self.store.replace(transition(self.store.load(self.session), "freeze"))
+        self.store.replace(transition(self.store.load(self.session), "approve_direct"))
+        for subcommand in ("complete", "fail"):
+            with self.subTest(approved_subcommand=subcommand):
+                allowed = handle_hook(self.event("PreToolUse", tool_name="Bash",
+                                                  tool_input={"command": f"{helper} {subcommand}"}), self.env)
+                updated = allowed.output["hookSpecificOutput"]["updatedInput"]
+                self.assertEqual(updated["env"], {"CODEX_FORGE_DATA": str(self.data), "CODEX_FORGE_SESSION_ID": self.session})
         untouched = handle_hook(self.event("PreToolUse", tool_name="Bash",
                                            tool_input={"command": "git status"}), self.env)
         self.assertEqual(untouched.output, {})
         for command in ("codex-forge status", "forge_hook.py status", "hooks/forge_hook.py status",
+                        str(self.plugin_root / "hooks" / "forge_hook.py") + " status",
                         "/tmp/forge_hook.py status", f"python3 {helper} status", f"{helper} status extra",
-                        f"{helper} --status", "git status forge_hook.py", "ls codex-forge",
-                        "python forge_hook.py status", "codex-forge", "forge_hook.py"):
+                        f"{helper} --status", f"{helper} question --session-id model", "git status forge_hook.py",
+                        "ls codex-forge", "python forge_hook.py status", "codex-forge", "forge_hook.py"):
             with self.subTest(command=command):
                 result = handle_hook(self.event("PreToolUse", tool_name="Bash",
                                                 tool_input={"command": command}), self.env)
@@ -90,7 +101,10 @@ class HookTests(unittest.TestCase):
             ("git status", {"PATH": "/tmp"}),
             ("git status", {"PYTHONPATH": "/tmp"}),
             ("git status", ["BASH_ENV=/tmp/evil"]),
-            (f"python3 {helper} status", {"PATH": "/tmp"}),
+            (f"{helper} status", {}),
+            (f"{helper} status", {"PATH": "/tmp"}),
+            (f"{helper} status", {"CODEX_FORGE_DATA": "/tmp"}),
+            (f"{helper} status", {"timeout": 1}),
         )
         for command, environment in cases:
             with self.subTest(command=command, environment=environment):

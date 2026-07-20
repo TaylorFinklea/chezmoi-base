@@ -1,11 +1,19 @@
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
+
+from codex_forge import cli as cli_module
+from codex_forge.state import StateStore, transition
 
 
 PLUGIN = Path(__file__).parents[1]
@@ -46,6 +54,13 @@ class CLITests(unittest.TestCase):
                                 env=env or self.env)
         return result, json.loads(result.stdout)
 
+    def invoke_cli(self, command, payload=None):
+        raw = b"" if payload is None else json.dumps(payload).encode()
+        with mock.patch.dict(os.environ, self.env, clear=False), \
+             mock.patch.object(cli_module, "_current_context", return_value=(self.cwd, None)), \
+             mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw))):
+            return cli_module.dispatch(command)
+
     def test_begin_question_cap_freeze_nonce_and_status(self):
         result, body = self.run_cli("begin")
         self.assertEqual(result.returncode, 0)
@@ -69,6 +84,93 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(body["status"], "frozen")
         self.assertIn("brief_digest", body)
+
+    def test_duplicate_begin_stale_heartbeat_and_changed_repository_binding_are_denied(self):
+        result, body = self.run_cli("begin")
+        self.assertEqual(result.returncode, 0)
+        result, body = self.run_cli("begin")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "duplicate_begin")
+
+        other_session = "stale-session"
+        heartbeat = self.data / ("heartbeat-" + hashlib.sha256(other_session.encode()).hexdigest() + ".json")
+        heartbeat.write_text(json.dumps({"plugin_version": "0.1.0", "session_id": other_session,
+                                         "cwd": str(self.cwd), "timestamp": 0}))
+        stale_env = {**self.env, "CODEX_FORGE_SESSION_ID": other_session}
+        result, body = self.run_cli("begin", env=stale_env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "heartbeat_required")
+
+        subprocess.run(["git", "init", "-q", str(self.cwd)], check=True)
+        subprocess.run(["git", "-C", str(self.cwd), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-qm", "repo"], check=True)
+        result, body = self.run_cli("status")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "binding_mismatch")
+
+    def test_complete_requires_terminal_verification_and_fail_stores_bounded_reason(self):
+        result, _ = self.run_cli("begin")
+        self.assertEqual(result.returncode, 0)
+        store = StateStore(self.data, "0.1.0")
+        state = store.load(self.session)
+        state = transition(transition(transition(state, "freeze"), "approve_direct"), "begin")
+        store.replace(state)
+        result, body = self.run_cli("complete", {"verification": "pending"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "verification_not_terminal")
+        result, body = self.run_cli("complete", {"verification": "passed"})
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(body["status"], "completed")
+
+        fail_session = "fail-session"
+        fail_env = {**self.env, "CODEX_FORGE_SESSION_ID": fail_session}
+        fail_heartbeat = self.data / ("heartbeat-" + hashlib.sha256(fail_session.encode()).hexdigest() + ".json")
+        fail_heartbeat.write_text(json.dumps({"plugin_version": "0.1.0", "session_id": fail_session,
+                                               "cwd": str(self.cwd), "timestamp": time.time()}))
+        result, _ = self.run_cli("begin", env=fail_env)
+        self.assertEqual(result.returncode, 0)
+        reason = "x" * 2048
+        result, body = self.run_cli("fail", {"reason": reason}, env=fail_env)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(body["status"], "failed")
+        meta = self.data / ("meta-" + hashlib.sha256(fail_session.encode()).hexdigest() + ".json")
+        self.assertEqual(json.loads(meta.read_text())["failure_reason"], reason)
+        result, body = self.run_cli("fail", {"reason": "again"}, env=fail_env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "invalid_transition")
+
+    def test_freeze_rolls_back_each_boundary_and_retry_recovers_exact_records(self):
+        self.run_cli("begin")
+        original_write = cli_module._write_record
+        for fail_call in (1, 2):
+            with self.subTest(boundary=f"write-{fail_call}"):
+                calls = 0
+                def fail_write(*args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == fail_call:
+                        raise cli_module.CLIError("injected", "injected")
+                    return original_write(*args, **kwargs)
+                with mock.patch.object(cli_module, "_write_record", side_effect=fail_write):
+                    with self.assertRaises(cli_module.CLIError) as failure:
+                        self.invoke_cli("freeze", BRIEF)
+                self.assertIn(failure.exception.code, {"freeze_failed", "freeze_recovery_required"})
+                self.assertEqual(StateStore(self.data, "0.1.0").load(self.session).status, "shaping")
+                self.assertFalse((self.data / ("brief-" + hashlib.sha256(self.session.encode()).hexdigest() + ".json")).exists())
+                self.assertFalse((self.data / ("approval-" + hashlib.sha256(self.session.encode()).hexdigest() + ".json")).exists())
+        with mock.patch.object(cli_module, "transition", side_effect=ValueError("injected transition")):
+            with self.assertRaises(cli_module.CLIError) as failure:
+                self.invoke_cli("freeze", BRIEF)
+        self.assertEqual(failure.exception.code, "freeze_failed")
+        self.assertEqual(StateStore(self.data, "0.1.0").load(self.session).status, "shaping")
+
+        with mock.patch.object(cli_module, "transition", side_effect=ValueError("injected transition")), \
+             mock.patch.object(cli_module, "_delete_record", side_effect=cli_module.CLIError("injected", "injected")):
+            with self.assertRaises(cli_module.CLIError) as failure:
+                self.invoke_cli("freeze", BRIEF)
+        self.assertEqual(failure.exception.code, "freeze_recovery_required")
+        result, body = self.run_cli("freeze", BRIEF)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(body["status"], "frozen")
 
     def test_rejects_identity_arguments_missing_env_bad_json_and_cwd(self):
         result = subprocess.run([str(CLI), "begin", "--session-id", "model"], cwd=self.cwd,

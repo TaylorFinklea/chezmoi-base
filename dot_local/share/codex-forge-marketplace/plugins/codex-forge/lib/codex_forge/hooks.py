@@ -218,8 +218,11 @@ def _helper_path(env: Any) -> Optional[Path]:
     return helper
 
 
+_HELPER_SUBCOMMANDS = frozenset(("begin", "question", "freeze", "status", "complete", "fail"))
+
+
 def _helper_command(command: Any, env: Any) -> bool:
-    """Recognize only the installed hook helper and its explicit status grammar."""
+    """Recognize only the installed helper and its explicit Task 4 grammar."""
     if not isinstance(command, str):
         return False
     helper = _helper_path(env)
@@ -229,7 +232,11 @@ def _helper_command(command: Any, env: Any) -> bool:
         words = shlex.split(command, posix=True)
     except ValueError:
         return False
-    return words == [str(helper), "status"]
+    return len(words) == 2 and words[0] == str(helper) and words[1] in _HELPER_SUBCOMMANDS
+
+
+def _helper_input(tool_input: Any, env: Any) -> bool:
+    return isinstance(tool_input, dict) and set(tool_input) == {"command"} and _helper_command(tool_input.get("command"), env)
 
 
 def _profile_path(env: Any) -> Path:
@@ -261,11 +268,9 @@ def _verify_forge_scout_profile(env: Any) -> None:
 
 
 def _inject_helper_input(tool_input: Any, event: Mapping[str, Any], env: Any) -> Optional[dict[str, Any]]:
-    if not isinstance(tool_input, dict):
+    if not _helper_input(tool_input, env):
         return None
-    command = tool_input.get("command")
-    if not _helper_command(command, env):
-        return None
+    command = tool_input["command"]
     session_id = _session_id(event)
     if session_id is None:
         return None
@@ -343,12 +348,16 @@ def _handle_session_start(event: Mapping[str, Any], env: Any) -> HookResult:
 def _handle_pre_tool(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
     tool_name = event.get("tool_name", "")
-    if tool_name == "Bash" and _has_agent_environment(event.get("tool_input")):
+    tool_input = event.get("tool_input")
+    if tool_name == "Bash" and _helper_command(_tool_input_command(tool_input), env):
+        if _helper_input(tool_input, env):
+            decision = PolicyDecision(True, "managed Forge control CLI is permitted during shaping")
+        else:
+            decision = PolicyDecision(False, "Forge control CLI requires its exact canonical command input.")
+    elif tool_name == "Bash" and _has_agent_environment(tool_input):
         decision = PolicyDecision(False, "Forge shaping blocks agent-supplied Bash execution environment.")
-    elif tool_name == "Bash" and _helper_command(_tool_input_command(event.get("tool_input")), env):
-        decision = PolicyDecision(True, "managed Forge control CLI is permitted during shaping")
     else:
-        decision = classify_tool(tool_name, event.get("tool_input", {}), state)
+        decision = classify_tool(tool_name, tool_input, state)
     if decision.allowed and tool_name == "Bash":
         updated = _inject_helper_input(event.get("tool_input"), event, env)
         if updated is not None:
