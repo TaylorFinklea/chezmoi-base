@@ -24,12 +24,21 @@ from .hooks import (
 )
 from .state import RepoIdentity, SecureJSONRecordStore, StateError, StateStore, ForgeState, transition
 from .verification import missing_verification_commands, verification_complete
+from .ralph import (
+    RalphError,
+    cancel_owned_ralph,
+    inspect_ralph_eligibility,
+    launch_ralph_dispatch,
+    prepare_ralph_dispatch,
+    recover_ralph_status,
+)
 
 HEARTBEAT_MAX_AGE_SECONDS = 5 * 60
 MAX_STDIN_BYTES = 2 * 1024 * 1024
 MAX_QUESTION_BYTES = 4096
 MAX_FAILURE_BYTES = 2048
 MAX_QUESTIONS = 5
+MAX_RALPH_OUTPUT_BYTES = 64 * 1024
 
 
 class CLIError(ValueError):
@@ -335,6 +344,136 @@ def status() -> dict[str, Any]:
     return _summary(state, root, session)
 
 
+def _ralph_brief(root: Path, session: str):
+    record = _read_record(root, "brief-", session)
+    if not isinstance(record, dict) or not isinstance(record.get("brief"), dict):
+        raise CLIError("ralph_unavailable", "the frozen Ralph brief is unavailable")
+    try:
+        brief = parse_brief(record["brief"])
+    except ValueError as exc:
+        raise CLIError("ralph_unavailable", "the frozen Ralph brief is malformed") from exc
+    if brief.dispatcher != "ralph":
+        raise CLIError("ralph_unavailable", "the frozen brief does not authorize Ralph")
+    return brief
+
+
+def _ralph_state(state: ForgeState, expected: str) -> None:
+    if state.status != expected:
+        raise CLIError("invalid_transition", f"Ralph requires Forge state {expected}")
+
+
+def ralph_preflight() -> dict[str, Any]:
+    session, root = _env()
+    state, cwd, _ = _load_bound(root, session)
+    _ralph_state(state, "approved_ralph")
+    brief = _ralph_brief(root, session)
+    try:
+        result = inspect_ralph_eligibility(brief, cwd)
+    except (RalphError, OSError) as exc:
+        raise CLIError("ralph_ineligible", str(exc)) from exc
+    return {"ok": result.eligible, "eligible": result.eligible, "reasons": list(result.reasons)}
+
+
+def ralph_launch() -> dict[str, Any]:
+    session, root = _env()
+    state, cwd, repo = _load_bound(root, session)
+    _ralph_state(state, "approved_ralph")
+    brief = _ralph_brief(root, session)
+    try:
+        preparation = prepare_ralph_dispatch(brief, cwd)
+    except (RalphError, OSError) as exc:
+        raise CLIError("ralph_prepare_failed", str(exc)) from exc
+
+    def on_spawn(identity: Any) -> None:
+        payload = {
+            "plugin_version": PLUGIN_VERSION,
+            "session_id": session,
+            "cwd": str(cwd),
+            "repo_root": str(repo.root) if repo is not None else None,
+            "git_dir": str(repo.git_dir) if repo is not None and repo.git_dir is not None else None,
+            "planning_commit": preparation.planning_commit,
+            "pid": identity.pid,
+            "pgid": identity.pgid,
+            "start": identity.start,
+            "stdout": "",
+            "stderr": "",
+        }
+        _write_record(root, "ralph-", session, payload)
+        try:
+            _store(root).replace(transition(state, "ralph_start"))
+        except (StateError, ValueError, OSError) as exc:
+            raise CLIError("state_write_failed", "Ralph start could not be persisted") from exc
+
+    try:
+        result = launch_ralph_dispatch(preparation, on_spawn=on_spawn)
+        record = _read_record(root, "ralph-", session)
+        if isinstance(record, dict):
+            _write_record(root, "ralph-", session, {
+                **record,
+                "stdout": result.stdout[-MAX_RALPH_OUTPUT_BYTES:],
+                "stderr": result.stderr[-MAX_RALPH_OUTPUT_BYTES:],
+                "exit_code": result.exit_code,
+            })
+        return {"ok": True, "status": "ralph_running", "exit_code": result.exit_code,
+                "planning_commit": preparation.planning_commit}
+    except CLIError:
+        raise
+    except (RalphError, OSError) as exc:
+        raise CLIError("ralph_launch_failed", str(exc)) from exc
+
+
+def _bound_ralph_record(root: Path, session: str, cwd: Path, repo: RepoIdentity | None) -> dict[str, Any]:
+    record = _read_record(root, "ralph-", session)
+    required = {"plugin_version", "session_id", "cwd", "repo_root", "git_dir", "planning_commit",
+                "pid", "pgid", "start", "stdout", "stderr"}
+    allowed = required | {"exit_code"}
+    if (not isinstance(record, dict) or (set(record) != required and set(record) != allowed) or
+            record.get("plugin_version") != PLUGIN_VERSION or record.get("session_id") != session or
+            record.get("cwd") != str(cwd) or not isinstance(record.get("planning_commit"), str) or
+            not record["planning_commit"] or type(record.get("pid")) is not int or record["pid"] <= 0 or
+            type(record.get("pgid")) is not int or record["pgid"] <= 0 or
+            not isinstance(record.get("start"), str) or not record["start"] or
+            not isinstance(record.get("stdout"), str) or not isinstance(record.get("stderr"), str) or
+            ("exit_code" in record and (type(record["exit_code"]) is not int))):
+        raise CLIError("ralph_unavailable", "Ralph instance record is unavailable")
+    expected_root = str(repo.root) if repo is not None else None
+    expected_git_dir = str(repo.git_dir) if repo is not None and repo.git_dir is not None else None
+    if record.get("repo_root") != expected_root or record.get("git_dir") != expected_git_dir:
+        raise CLIError("binding_mismatch", "Ralph instance repository binding does not match")
+    return record
+
+
+def ralph_status() -> dict[str, Any]:
+    session, root = _env()
+    state, cwd, repo = _load_bound(root, session, heartbeat=False)
+    record = _read_record(root, "ralph-", session)
+    if record is None:
+        return {"ok": True, "status": state.status, "owned": False, "running": False}
+    record = _bound_ralph_record(root, session, cwd, repo)
+    recovered = recover_ralph_status(record)
+    return {"ok": True, "status": state.status, **recovered,
+            "planning_commit": record.get("planning_commit"),
+            "stdout": record.get("stdout", "")[-MAX_RALPH_OUTPUT_BYTES:],
+            "stderr": record.get("stderr", "")[-MAX_RALPH_OUTPUT_BYTES:]}
+
+
+def ralph_cancel() -> dict[str, Any]:
+    session, root = _env()
+    state, cwd, repo = _load_bound(root, session)
+    _ralph_state(state, "ralph_running")
+    record = _bound_ralph_record(root, session, cwd, repo)
+    try:
+        result = cancel_owned_ralph(record)
+    except RalphError as exc:
+        raise CLIError("ralph_not_owned", str(exc)) from exc
+    try:
+        _store(root).replace(transition(state, "cancel"))
+        _delete_record(root, "ralph-", session)
+    except (CLIError, StateError, ValueError, OSError) as exc:
+        raise CLIError("state_write_failed", "Ralph cancellation could not be persisted") from exc
+    return {"ok": True, "status": "cancelled", **result}
+
+
 def complete() -> dict[str, Any]:
     session, root = _env()
     state, _, _ = _load_bound(root, session)
@@ -400,14 +539,32 @@ def dispatch(command: str, argument: str | None = None) -> dict[str, Any]:
         if argument is None:
             raise CLIError("payload_required", "fail requires one base64url payload")
         return fail(argument)
-    raise CLIError("invalid_command", "usage: codex-forge {begin|question|freeze|status|complete|fail}")
+    if command == "ralph-preflight":
+        if argument is not None:
+            raise CLIError("invalid_command", "ralph-preflight accepts no payload")
+        return ralph_preflight()
+    if command == "ralph-launch":
+        if argument is not None:
+            raise CLIError("invalid_command", "ralph-launch accepts no payload")
+        return ralph_launch()
+    if command == "ralph-status":
+        if argument is not None:
+            raise CLIError("invalid_command", "ralph-status accepts no payload")
+        return ralph_status()
+    if command == "ralph-cancel":
+        if argument is not None:
+            raise CLIError("invalid_command", "ralph-cancel accepts no payload")
+        return ralph_cancel()
+    raise CLIError("invalid_command", "usage: codex-forge {begin|question|freeze|status|complete|fail|ralph-preflight|ralph-launch|ralph-status|ralph-cancel}")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     try:
-        if not args or args[0] not in {"begin", "question", "freeze", "status", "complete", "fail"}:
-            raise CLIError("invalid_command", "usage: codex-forge {begin|question|freeze|status|complete|fail}")
+        commands = {"begin", "question", "freeze", "status", "complete", "fail",
+                    "ralph-preflight", "ralph-launch", "ralph-status", "ralph-cancel"}
+        if not args or args[0] not in commands:
+            raise CLIError("invalid_command", "usage: codex-forge {begin|question|freeze|status|complete|fail|ralph-preflight|ralph-launch|ralph-status|ralph-cancel}")
         command = args[0]
         expects_payload = command in {"question", "freeze", "fail"}
         if len(args) != (2 if expects_payload else 1):

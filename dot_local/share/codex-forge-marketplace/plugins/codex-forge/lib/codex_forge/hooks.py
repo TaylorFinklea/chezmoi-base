@@ -261,7 +261,10 @@ def _helper_path(env: Any) -> Optional[Path]:
     return helper
 
 
-_HELPER_SUBCOMMANDS = frozenset(("begin", "question", "freeze", "status", "complete", "fail"))
+_HELPER_SUBCOMMANDS = frozenset((
+    "begin", "question", "freeze", "status", "complete", "fail",
+    "ralph-preflight", "ralph-launch", "ralph-status", "ralph-cancel",
+))
 _HELPER_PAYLOAD_SUBCOMMANDS = frozenset(("question", "freeze", "fail"))
 
 

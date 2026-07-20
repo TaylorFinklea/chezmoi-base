@@ -14,7 +14,8 @@ class SkillTests(unittest.TestCase):
             "approve <nonce> direct", "approve <nonce> ralph",
             "revise <nonce>", "cancel <nonce>", "direct", "Ralph",
             "current hook heartbeat", "../../bin/codex-forge", "loaded SKILL.md",
-            "prose-only approval",
+            "prose-only approval", "Ralph handoff", "ralph-preflight",
+            "ralph-launch", "ralph-status", "ralph-cancel", "never rewrites Git",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)

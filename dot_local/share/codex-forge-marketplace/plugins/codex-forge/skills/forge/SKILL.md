@@ -50,9 +50,29 @@ hook-controlled session.
    direct for a bounded task and Ralph only when the frozen brief explicitly
    calls for its bounded phase loop.
 10. Do not start implementation until the hook confirms the exact nonce choice
-    and the CLI/state transition. `$forge` does not implement execution,
-    verification recording, Ralph orchestration, or completion behavior owned by
-    later tasks.
+    and the CLI/state transition. For an approved Ralph brief, use only the
+    no-payload Ralph controls below; do not reconstruct the brief, add backend
+    flags, or invoke `ralph` directly.
+
+## Ralph handoff
+
+After the hook has moved this exact session to `approved_ralph`, use the
+installed helper directly and without a payload:
+
+1. `../../bin/codex-forge ralph-preflight` reports every eligibility guard.
+   Ralph requires a clean Git worktree, an empty `## Plan`, valid regular
+   planning files, at least two non-Lead phases with exact Verify commands, and
+   a visible `ralph` executable.
+2. `../../bin/codex-forge ralph-launch` is the only launch path. It creates the
+   Forge-owned planning commit, runs the exact Codex backend arguments, records
+   the owned PID/process group, and never rewrites Git after the spawn boundary.
+3. `../../bin/codex-forge ralph-status` recovers only a still-matching owned
+   process identity. `../../bin/codex-forge ralph-cancel` is the only
+   cancellation path; it terminates only that owned process group.
+
+Do not call these controls from shaping, direct, terminal, stale-heartbeat, or
+mismatched repository states. They accept no payload, shell syntax, backend
+flags, or model-provided identity.
 
 ## Procedure
 
@@ -66,4 +86,6 @@ hook-controlled session.
 - End the frozen turn by printing only the brief summary and the four exact
   approve/revise/cancel command choices. Never print a made-up nonce.
 - After the user chooses, let the hook-confirmed state transition determine
-  whether direct or Ralph execution is available; do not bypass it.
+  whether direct or Ralph execution is available; do not bypass it. For Ralph,
+  run `ralph-preflight` before `ralph-launch`, then use only `ralph-status` or
+  `ralph-cancel` for that recorded dispatch.

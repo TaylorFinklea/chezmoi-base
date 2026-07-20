@@ -72,6 +72,10 @@ class HookTests(unittest.TestCase):
             "begin": f"{helper} begin", "question": f"{helper} question {payload}",
             "freeze": f"{helper} freeze {payload}", "status": f"{helper} status",
             "complete": f"{helper} complete", "fail": f"{helper} fail {payload}",
+            "ralph-preflight": f"{helper} ralph-preflight",
+            "ralph-launch": f"{helper} ralph-launch",
+            "ralph-status": f"{helper} ralph-status",
+            "ralph-cancel": f"{helper} ralph-cancel",
         }
         for subcommand, command in helper_commands.items():
             with self.subTest(subcommand=subcommand):

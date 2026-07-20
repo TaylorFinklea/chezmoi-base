@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
@@ -169,6 +170,47 @@ class CLITests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(body["code"], "verification_not_terminal")
         self.assertEqual(store.load(session).status, "ralph_running")
+
+    def test_ralph_control_commands_are_state_bound_and_persist_owned_identity(self):
+        ralph_brief = {**BRIEF, "dispatcher": "ralph", "phases": [
+            {"name": "implement", "tier_floor": "senior", "verify": "python3 -m unittest"},
+            {"name": "document", "tier_floor": "junior", "verify": "python3 -m py_compile"},
+        ]}
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        digest_name = hashlib.sha256(self.session.encode()).hexdigest()
+        (self.data / f"brief-{digest_name}.json").write_text(json.dumps({"digest": "ralph-digest", "brief": ralph_brief}))
+        store = StateStore(self.data, "0.1.0")
+        state = transition(transition(store.load(self.session), "freeze"), "approve_ralph")
+        store.replace(state)
+
+        with mock.patch.object(cli_module, "inspect_ralph_eligibility", return_value=SimpleNamespace(eligible=True, reasons=())):
+            self.assertEqual(self.invoke_cli("ralph-preflight"), {"ok": True, "eligible": True, "reasons": []})
+
+        preparation = SimpleNamespace(planning_commit="planning-commit")
+        def launch(prepared, *, on_spawn):
+            self.assertIs(prepared, preparation)
+            on_spawn(SimpleNamespace(pid=123, pgid=123, start="started"))
+            return SimpleNamespace(exit_code=0, stdout="out", stderr="err")
+
+        with mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
+             mock.patch.object(cli_module, "launch_ralph_dispatch", side_effect=launch):
+            launched = self.invoke_cli("ralph-launch")
+        self.assertEqual(launched, {"ok": True, "status": "ralph_running", "exit_code": 0,
+                                    "planning_commit": "planning-commit"})
+        self.assertEqual(store.load(self.session).status, "ralph_running")
+
+        with mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": False, "pid": 123, "pgid": 123}):
+            observed = self.invoke_cli("ralph-status")
+        self.assertEqual(observed["planning_commit"], "planning-commit")
+        self.assertEqual(observed["stdout"], "out")
+        self.assertEqual(observed["stderr"], "err")
+        self.assertTrue(observed["owned"])
+
+        with mock.patch.object(cli_module, "cancel_owned_ralph", return_value={"cancelled": True, "owned": True, "running": False}):
+            cancelled = self.invoke_cli("ralph-cancel")
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(store.load(self.session).status, "cancelled")
+        self.assertFalse((self.data / f"ralph-{digest_name}.json").exists())
 
     def test_fail_stores_bounded_reason(self):
         result, _ = self.run_cli("begin")
