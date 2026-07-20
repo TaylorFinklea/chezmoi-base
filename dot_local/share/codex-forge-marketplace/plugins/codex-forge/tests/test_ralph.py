@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import io
 import os
@@ -285,6 +286,60 @@ class RalphTests(unittest.TestCase):
                 self.launch(preparation)
         self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
         self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+
+    def test_second_pipe_creation_closes_first_pair_and_rolls_back_transaction(self):
+        original_pipe = os.pipe
+        acquired = []
+        calls = 0
+
+        def fail_second_pipe():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected second pipe failure")
+            pair = original_pipe()
+            acquired.extend(pair)
+            return pair
+
+        with mock.patch.object(ralph_module.os, "pipe", side_effect=fail_second_pipe):
+            with self.assertRaisesRegex(OSError, "second pipe"):
+                ralph_module._launch_pipes()
+        for fd in acquired:
+            with self.subTest(fd=fd):
+                with self.assertRaises(OSError) as failure:
+                    os.fstat(fd)
+                self.assertEqual(failure.exception.errno, errno.EBADF)
+
+        preparation = self.prepare()
+        calls = 0
+        with mock.patch.object(ralph_module.os, "pipe", side_effect=fail_second_pipe):
+            with self.assertRaisesRegex(RalphError, "before spawn"):
+                self.launch(preparation)
+        self.assertEqual(subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+        self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+
+    def test_post_arm_ack_timeout_is_bounded_and_never_rewinds_git(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            started = time.monotonic()
+            with mock.patch.object(ralph_module, "ACK_WAIT_TIMEOUT_SECONDS", 0.05):
+                with self.assertRaises(TimeoutError):
+                    ralph_module._read_exact_ack(read_fd)
+            self.assertLess(time.monotonic() - started, 0.5)
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+
+        child = FakePopen(running=True)
+        identity = ProcessIdentity(child.pid, "started", child.pid, "a" * 64)
+        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
+             mock.patch.object(ralph_module, "_identity", return_value=identity), \
+             mock.patch.object(ralph_module, "_read_exact_ack", side_effect=TimeoutError("injected")):
+            with self.assertRaises(ralph_module.RalphLaunchRecoveryError):
+                self.launch(self.prepare())
+        self.assertNotEqual(subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
 
     def test_ack_loss_is_recovery_required_and_never_rewinds_git(self):
         child = FakePopen(running=True)

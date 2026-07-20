@@ -14,8 +14,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from codex_forge import cli as cli_module
+from codex_forge import ralph as ralph_module
 from codex_forge.ralph import FileSnapshot, RalphPreparation
-from codex_forge.state import StateError, StateStore, transition
+from codex_forge.state import RepoIdentity, StateError, StateStore, transition
 
 
 PLUGIN = Path(__file__).parents[1]
@@ -332,6 +333,67 @@ class CLITests(unittest.TestCase):
         self.assertFalse((self.data / f"ralph-{hashlib.sha256(self.session.encode()).hexdigest()}.json").exists())
         self.assertFalse((self.data / f"ralph-recovery-{hashlib.sha256(self.session.encode()).hexdigest()}.json").exists())
         rollback.assert_called_once_with(preparation)
+
+    def test_real_runner_dies_after_arm_before_ack_keeps_recovery_transaction(self):
+        (self.cwd / ".docs/ai").mkdir(parents=True)
+        (self.cwd / ".docs/ai/current-state.md").write_text("## Plan\n\n")
+        (self.cwd / ".docs/ai/roadmap.md").write_text("# Roadmap\n")
+        subprocess.run(["git", "init", "-q"], cwd=self.cwd, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.cwd, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.cwd, check=True)
+        subprocess.run(["git", "add", ".docs/ai"], cwd=self.cwd, check=True)
+        subprocess.run(["git", "commit", "-qm", "baseline"], cwd=self.cwd, check=True)
+        before_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.cwd, text=True).strip()
+        repo = RepoIdentity(self.cwd, before_head, self.cwd / ".git")
+        context = mock.patch.object(cli_module, "_current_context", return_value=(self.cwd, repo))
+        with mock.patch.dict(os.environ, self.env, clear=False), context:
+            self.assertEqual(cli_module.begin()["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        approved = transition(transition(store.load(self.session), "freeze"), "approve_ralph")
+        store.replace(approved)
+        digest_name = hashlib.sha256(self.session.encode()).hexdigest()
+        ralph_brief = {**BRIEF, "dispatcher": "ralph", "phases": [
+            {"name": "implement", "tier_floor": "senior", "verify": "python3 -m unittest"},
+            {"name": "document", "tier_floor": "junior", "verify": "python3 -m py_compile"},
+        ]}
+        (self.data / f"brief-{digest_name}.json").write_text(
+            json.dumps({"digest": "ralph-digest", "brief": ralph_brief}))
+        preparation = RalphPreparation(
+            self.cwd, (".docs/ai/current-state.md",),
+            (FileSnapshot(".docs/ai/current-state.md", True, b"## Plan\n\n"),),
+            before_head, before_head)
+        runner = self.root / "stall-runner.py"
+        runner.write_text("import os, sys, time\nos.read(int(sys.argv[1]), 1)\ntime.sleep(0.15)\n")
+        children = []
+
+        def spawn(cwd, marker, _data_root, _launch_id, *, arm_read_fd, acknowledgement_write_fd):
+            child = subprocess.Popen(
+                [sys.executable, str(runner), str(arm_read_fd)], cwd=cwd,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, env={**os.environ, ralph_module.OWNERSHIP_MARKER_ENV: marker},
+                close_fds=True, pass_fds=(arm_read_fd, acknowledgement_write_fd))
+            children.append(child)
+            return child
+
+        fd_count = len(os.listdir("/dev/fd")) if Path("/dev/fd").exists() else None
+        with mock.patch.dict(os.environ, self.env, clear=False), context, \
+             mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
+             mock.patch.object(ralph_module, "ACK_WAIT_TIMEOUT_SECONDS", 0.05), \
+             mock.patch.object(ralph_module, "_spawn_backend", side_effect=spawn):
+            with self.assertRaises(cli_module.CLIError) as failure:
+                cli_module.ralph_launch()
+        self.assertEqual(failure.exception.code, "ralph_launch_recovery_required")
+        self.assertEqual(len(children), 1)
+        children[0].wait(timeout=2)
+        self.assertEqual(subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.cwd, text=True).strip(), before_head)
+        self.assertTrue((self.data / f"ralph-recovery-{digest_name}.json").exists())
+        with mock.patch.dict(os.environ, self.env, clear=False), context:
+            status = cli_module.ralph_status()
+        self.assertEqual(status["terminal"], "recovery-required")
+        self.assertEqual(store.load(self.session).status, "ralph_running")
+        if fd_count is not None:
+            self.assertEqual(len(os.listdir("/dev/fd")), fd_count)
 
     def test_spawn_proof_never_rewinds_durable_transaction(self):
         self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")

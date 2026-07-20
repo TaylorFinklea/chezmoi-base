@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import select
 import signal
 import stat
 import subprocess
@@ -31,6 +32,7 @@ _MARKER_DIGEST_BYTES = 32
 _ARM_BYTE = b"A"
 _ACK_SPAWNED = b"S"
 _ACK_SPAWN_FAILED = b"F"
+ACK_WAIT_TIMEOUT_SECONDS = 1.0
 
 
 class RalphError(RuntimeError):
@@ -787,9 +789,13 @@ def _launch_pipes() -> tuple[int, int, int, int]:
     inheritance route into the supervisor, so a launcher crash turns the arm
     reader into EOF rather than an ambiguous durable-file poll.
     """
-    arm_read, arm_write = os.pipe()
-    acknowledgement_read, acknowledgement_write = os.pipe()
+    arm_read: int | None = None
+    arm_write: int | None = None
+    acknowledgement_read: int | None = None
+    acknowledgement_write: int | None = None
     try:
+        arm_read, arm_write = os.pipe()
+        acknowledgement_read, acknowledgement_write = os.pipe()
         for fd in (arm_read, arm_write, acknowledgement_read, acknowledgement_write):
             os.set_inheritable(fd, False)
         return arm_read, arm_write, acknowledgement_read, acknowledgement_write
@@ -841,11 +847,22 @@ def _no_spawn_receipt(root: Path, launch: RalphLaunch) -> bool:
     return receipt is not None and receipt.get("status") in {"prearm_aborted", "spawn_failed"}
 
 
-def _read_exact_ack(fd: int) -> bytes:
-    first = os.read(fd, 1)
+def _read_exact_ack(fd: int, *, timeout: float | None = None) -> bytes:
+    deadline = time.monotonic() + (ACK_WAIT_TIMEOUT_SECONDS if timeout is None else timeout)
+
+    def read_byte() -> bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Ralph supervisor acknowledgement timed out")
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            raise TimeoutError("Ralph supervisor acknowledgement timed out")
+        return os.read(fd, 1)
+
+    first = read_byte()
     # The supervisor closes its acknowledgement descriptor immediately after
     # one byte.  EOF is part of the exact one-byte acknowledgement contract.
-    tail = os.read(fd, 1)
+    tail = read_byte()
     if tail:
         return b""
     return first
@@ -871,6 +888,7 @@ def launch_ralph_dispatch(preparation: RalphPreparation, *, data_root: Path,
     acknowledgement_write: int | None = None
     root: Path | None = None
     launch: RalphLaunch | None = None
+    arm_delivered = False
     try:
         root = _private_root(data_root)
         stdout_name, stderr_name, receipt_name = _private_names(launch_id)
@@ -931,18 +949,20 @@ def launch_ralph_dispatch(preparation: RalphPreparation, *, data_root: Path,
         # makes a launcher crash before this point observable as prearm EOF.
         if os.write(arm_write, _ARM_BYTE) != len(_ARM_BYTE):
             raise OSError("short Ralph arm write")
+        arm_delivered = True
         _close_fd(arm_write)
         arm_write = None
         acknowledgement = _read_exact_ack(acknowledgement_read)
-    except OSError as exc:
+    except (OSError, TimeoutError) as exc:
         _close_fd(arm_write)
         arm_write = None
         _close_fd(acknowledgement_read)
         acknowledgement_read = None
-        # A failed write/read may race a delivered arm.  Rewind only when the
-        # receipt positively proves no Ralph Popen; otherwise status recovery
-        # owns the durable transaction and Git is left untouched.
-        if launch is not None and root is not None and _no_spawn_receipt(root, launch):
+        # A failed write may happen before delivery.  Rewind only when the
+        # receipt positively proves no Ralph Popen and the arm was not
+        # delivered; after delivery, status recovery owns the durable
+        # transaction and Git is left untouched.
+        if not arm_delivered and launch is not None and root is not None and _no_spawn_receipt(root, launch):
             _abort_unarmed_supervisor(preparation, child, identity, on_abort, on_rollback)
             raise RalphError("Ralph supervisor failed before Ralph spawn") from exc
         threading.Thread(target=child.wait, daemon=True).start()
@@ -960,10 +980,10 @@ def launch_ralph_dispatch(preparation: RalphPreparation, *, data_root: Path,
         raise RalphLaunchRecoveryError(
             "Ralph spawn failure acknowledgement is not durable; recovery is required")
     if acknowledgement != _ACK_SPAWNED:
-        # No exact post-Popen acknowledgement means no launch success.  EOF or
-        # a malformed byte can still be rolled back, but only after the receipt
-        # positively proves that real Ralph never reached Popen.
-        if root is not None and launch is not None and _no_spawn_receipt(root, launch):
+        # No exact post-Popen acknowledgement means no launch success.  Once
+        # arm delivery occurred, EOF or a malformed byte is recovery-required;
+        # status must reconcile the durable transaction without rewinding Git.
+        if not arm_delivered and root is not None and launch is not None and _no_spawn_receipt(root, launch):
             _abort_unarmed_supervisor(preparation, child, identity, on_abort, on_rollback)
             raise RalphError("Ralph supervisor failed before Ralph spawn")
         threading.Thread(target=child.wait, daemon=True).start()
