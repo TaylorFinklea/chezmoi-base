@@ -1,8 +1,9 @@
 """Detached, stdlib-only Ralph supervisor used by Codex Forge.
 
-The launcher owns this process group. This process waits on a private, one-use
-parent gate before it can start real Ralph, then drains both pipes into bounded
-private tail files and atomically publishes a receipt for later recovery.
+The launcher owns this process group.  The supervisor cannot call real Ralph
+until it consumes one inherited arm byte; it acknowledges only after the real
+``ralph -t codex`` Popen succeeds.  Pipe EOF before that byte is a durable
+pre-arm abort, not a timeout.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import stat
 import subprocess
@@ -22,15 +24,12 @@ import time
 
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_OUTPUT_LINES = 200
-GATE_WAIT_SECONDS = 5.0
-GATE_POLL_SECONDS = 0.02
 REDACTED = b"[REDACTED]"
-GATE_PENDING = b"waiting\n"
-GATE_ARMED = b"armed\n"
+ARM_BYTE = b"A"
+ACK_SPAWNED = b"S"
+ACK_SPAWN_FAILED = b"F"
 MARKER_ENV = "CODEX_FORGE_RALPH_OWNERSHIP_MARKER"
-_NAME_RE = re.compile(
-    r"ralph-(?:(?:stdout|stderr)-[0-9a-f]{64}\.log|receipt-[0-9a-f]{64}\.json|gate-[0-9a-f]{64}\.gate)"
-)
+_NAME_RE = re.compile(r"ralph-(?:(?:stdout|stderr)-[0-9a-f]{64}\.log|receipt-[0-9a-f]{64}\.json)")
 
 
 def _safe_name(value: str) -> str:
@@ -77,7 +76,9 @@ def _atomic_receipt(root: Path, name: str, payload: dict[str, object]) -> None:
     temp = root / ("." + name + "." + str(os.getpid()) + ".tmp")
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        os.write(fd, raw)
+        view = memoryview(raw)
+        while view:
+            view = view[os.write(fd, view):]
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -177,45 +178,50 @@ def _drain(stream: object, sink: _TailFile) -> None:
             pass
 
 
-def _gate_is_armed(root: Path, name: str) -> bool:
-    path, expected = _private_regular(root, name)
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+def _pipe_fd(value: str) -> int:
     try:
-        observed = os.fstat(fd)
-        if (not stat.S_ISREG(observed.st_mode) or observed.st_ino != expected.st_ino or
-                observed.st_dev != expected.st_dev):
-            raise ValueError("private Ralph gate changed")
-        raw = os.read(fd, max(len(GATE_PENDING), len(GATE_ARMED)) + 1)
-        if os.read(fd, 1):
-            raise ValueError("invalid private Ralph gate")
-    finally:
-        os.close(fd)
-    if raw == GATE_PENDING:
-        return False
-    if raw != GATE_ARMED:
-        raise ValueError("invalid private Ralph gate")
-    current = path.lstat()
-    if (current.st_ino != expected.st_ino or current.st_dev != expected.st_dev or
-            stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode)):
-        raise ValueError("private Ralph gate changed")
-    path.unlink()
-    directory = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-    return True
+        fd = int(value)
+    except ValueError as exc:
+        raise ValueError("invalid inherited Ralph pipe") from exc
+    if fd < 0 or not stat.S_ISFIFO(os.fstat(fd).st_mode):
+        raise ValueError("invalid inherited Ralph pipe")
+    return fd
 
 
-def _await_gate(root: Path, name: str, stop_signal: list[int]) -> bool:
-    deadline = time.monotonic() + GATE_WAIT_SECONDS
-    while time.monotonic() < deadline:
-        if stop_signal:
+def _await_arm(fd: int, stop_signal: list[int]) -> bool:
+    """Wait indefinitely for one exact arm byte; EOF proves a pre-arm abort."""
+    try:
+        while not stop_signal:
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if not readable:
+                continue
+            arm = os.read(fd, 1)
+            if arm != ARM_BYTE:
+                return False
+            # The launcher closes immediately after the one atomic byte.  A
+            # second byte is protocol corruption; EOF completes the exact arm.
+            while not stop_signal:
+                readable, _, _ = select.select([fd], [], [], 0.1)
+                if readable:
+                    return os.read(fd, 1) == b""
             return False
-        if _gate_is_armed(root, name):
-            return True
-        time.sleep(GATE_POLL_SECONDS)
-    return False
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _acknowledge(fd: int, value: bytes) -> None:
+    try:
+        if value not in {ACK_SPAWNED, ACK_SPAWN_FAILED} or os.write(fd, value) != 1:
+            raise OSError("could not acknowledge Ralph supervisor")
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -224,53 +230,77 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stdout-name", required=True)
     parser.add_argument("--stderr-name", required=True)
     parser.add_argument("--receipt-name", required=True)
-    parser.add_argument("--gate-name", required=True)
+    parser.add_argument("--arm-fd", required=True)
+    parser.add_argument("--ack-fd", required=True)
     args = parser.parse_args(argv)
     root = _root(args.data_root)
+    arm_fd = _pipe_fd(args.arm_fd)
+    acknowledgement_fd = _pipe_fd(args.ack_fd)
+    if arm_fd == acknowledgement_fd:
+        raise ValueError("invalid inherited Ralph pipe")
     marker = os.environ.get(MARKER_ENV, "")
     secrets = tuple(item for item in (
         marker.encode("utf-8"), hashlib.sha256(marker.encode("utf-8")).hexdigest().encode("ascii")
     ) if item)
-    # Secrets are final before either pipe can be read; carry must cover every
-    # token/digest split across the 8192-byte streaming reads.
     stdout_sink = _TailFile(_open_log(root, args.stdout_name), secrets)
     stderr_sink = _TailFile(_open_log(root, args.stderr_name), secrets)
     _private_regular(root, args.receipt_name)
     child: subprocess.Popen[bytes] | None = None
     exit_code = 127
     started = False
+    acknowledgement_sent = False
     stop_signal: list[int] = []
 
     def stopped(signum: int, _frame: object) -> None:
         stop_signal.append(signum)
 
-    signal.signal(signal.SIGTERM, stopped)
-    signal.signal(signal.SIGINT, stopped)
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, stopped)
+        signal.signal(signal.SIGINT, stopped)
     try:
-        _private_regular(root, args.gate_name)
-        if not _await_gate(root, args.gate_name, stop_signal):
-            stderr_sink.append(b"Ralph supervisor gate was not armed\n")
-        else:
-            child = subprocess.Popen(["ralph", "-t", "codex"], stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=os.getcwd())
-            started = True
+        if not _await_arm(arm_fd, stop_signal):
+            stderr_sink.append(b"Ralph supervisor pre-arm abort\n")
             _atomic_receipt(root, args.receipt_name, {
-                "version": 1, "status": "running", "ralph_pid": child.pid, "started_at": time.time(),
+                "version": 1, "status": "prearm_aborted", "completed_at": time.time(),
             })
-            readers = [threading.Thread(target=_drain, args=(child.stdout, stdout_sink), daemon=True),
-                       threading.Thread(target=_drain, args=(child.stderr, stderr_sink), daemon=True)]
-            for reader in readers:
-                reader.start()
-            while child.poll() is None:
-                if stop_signal:
-                    child.terminate()
-                try:
-                    exit_code = child.wait(timeout=0.1)
-                except subprocess.TimeoutExpired:
-                    continue
-            exit_code = child.returncode if child.returncode is not None else exit_code
-            for reader in readers:
-                reader.join(timeout=2)
+        else:
+            try:
+                child = subprocess.Popen(["ralph", "-t", "codex"], stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=os.getcwd(),
+                                         close_fds=True)
+            except (OSError, subprocess.SubprocessError):
+                stderr_sink.append(b"Ralph supervisor could not start Ralph\n")
+                _atomic_receipt(root, args.receipt_name, {
+                    "version": 1, "status": "spawn_failed", "completed_at": time.time(),
+                })
+                _acknowledge(acknowledgement_fd, ACK_SPAWN_FAILED)
+                acknowledgement_sent = True
+            else:
+                started = True
+                # Receipt publication is the durable real-Popen boundary.  The
+                # acknowledgement is deliberately later than this write.
+                _atomic_receipt(root, args.receipt_name, {
+                    "version": 1, "status": "spawned", "ralph_pid": child.pid, "started_at": time.time(),
+                })
+                _acknowledge(acknowledgement_fd, ACK_SPAWNED)
+                acknowledgement_sent = True
+                _atomic_receipt(root, args.receipt_name, {
+                    "version": 1, "status": "running", "ralph_pid": child.pid, "started_at": time.time(),
+                })
+                readers = [threading.Thread(target=_drain, args=(child.stdout, stdout_sink), daemon=True),
+                           threading.Thread(target=_drain, args=(child.stderr, stderr_sink), daemon=True)]
+                for reader in readers:
+                    reader.start()
+                while child.poll() is None:
+                    if stop_signal:
+                        child.terminate()
+                    try:
+                        exit_code = child.wait(timeout=0.1)
+                    except subprocess.TimeoutExpired:
+                        continue
+                exit_code = child.returncode if child.returncode is not None else exit_code
+                for reader in readers:
+                    reader.join(timeout=2)
     except BaseException as exc:
         if child is not None and child.poll() is None:
             try:
@@ -284,17 +314,32 @@ def main(argv: list[str] | None = None) -> int:
                     exit_code = 127
         if not started:
             stderr_sink.append((f"Ralph supervisor failed: {type(exc).__name__}\n").encode("utf-8"))
+            if not acknowledgement_sent:
+                try:
+                    _atomic_receipt(root, args.receipt_name, {
+                        "version": 1, "status": "spawn_failed", "completed_at": time.time(),
+                    })
+                    _acknowledge(acknowledgement_fd, ACK_SPAWN_FAILED)
+                    acknowledgement_sent = True
+                except OSError:
+                    pass
     finally:
+        if not acknowledgement_sent:
+            try:
+                os.close(acknowledgement_fd)
+            except OSError:
+                pass
         stdout_sink.close()
         stderr_sink.close()
-        _atomic_receipt(root, args.receipt_name, {
-            "version": 1,
-            "status": "completed" if exit_code == 0 else "failed",
-            "exit_code": int(exit_code),
-            "completed_at": time.time(),
-            "interrupted": bool(stop_signal),
-        })
-    return 0 if exit_code == 0 else 1
+        if started:
+            _atomic_receipt(root, args.receipt_name, {
+                "version": 1,
+                "status": "completed" if exit_code == 0 else "failed",
+                "exit_code": int(exit_code),
+                "completed_at": time.time(),
+                "interrupted": bool(stop_signal),
+            })
+    return 0 if started and exit_code == 0 else 1
 
 
 if __name__ == "__main__":

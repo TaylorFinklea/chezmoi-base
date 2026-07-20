@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -285,6 +286,38 @@ class RalphTests(unittest.TestCase):
         self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
         self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
 
+    def test_ack_loss_is_recovery_required_and_never_rewinds_git(self):
+        child = FakePopen(running=True)
+        identity = ProcessIdentity(child.pid, "started", child.pid, "a" * 64)
+        callbacks = {"spawn": False, "abort": False}
+        def on_spawn(_launch):
+            callbacks["spawn"] = True
+        def on_abort():
+            callbacks["abort"] = True
+        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
+             mock.patch.object(ralph_module, "_identity", return_value=identity):
+            with self.assertRaises(ralph_module.RalphLaunchRecoveryError):
+                self.launch(self.prepare(), on_spawn=on_spawn, on_abort=on_abort)
+        self.assertTrue(callbacks["spawn"])
+        self.assertFalse(callbacks["abort"])
+        self.assertNotEqual(subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+
+    def test_failed_pre_popen_rollback_is_always_recovery_required(self):
+        preparation = self.prepare()
+        with mock.patch.object(ralph_module, "_private_root", side_effect=RalphError("root failed")), \
+             mock.patch.object(ralph_module, "_rollback", side_effect=RalphError("rollback failed")):
+            with self.assertRaises(ralph_module.RalphLaunchRecoveryError):
+                self.launch(preparation)
+
+    def test_no_pipe_fd_leak_after_supervisor_start_failure(self):
+        before = len(os.listdir("/dev/fd"))
+        preparation = self.prepare()
+        with mock.patch.object(ralph_module, "_spawn_backend", side_effect=OSError("missing")):
+            with self.assertRaises(RalphError):
+                self.launch(preparation)
+        self.assertEqual(len(os.listdir("/dev/fd")), before)
+
     def test_async_launch_returns_promptly_and_receipt_bounds_output(self):
         log = self.root / "ralph.log"
         self.ralph.write_text(
@@ -387,19 +420,28 @@ class RalphTests(unittest.TestCase):
                     cancel_owned_ralph(record, identity=lambda _pid, _marker: observed)
                 self.assertEqual(killpg.call_args_list, [])
 
-    def test_supervisor_marker_stays_in_environment_and_not_argv(self):
+    def test_supervisor_marker_stays_in_environment_and_pipes_are_explicitly_inherited(self):
         marker = "private-launch-marker"
         data = self.root / "ralph-data"
         data.mkdir()
-        for name in ralph_module._private_names("a" * 64)[:2]:
+        for name in ralph_module._private_names("a" * 64):
             (data / name).write_bytes(b"")
-        with mock.patch.object(ralph_module.subprocess, "Popen") as popen:
-            ralph_module._spawn_backend(self.repo, marker, data, "a" * 64)
-        args, kwargs = popen.call_args
-        self.assertIn("ralph_runner.py", args[0][1])
-        self.assertEqual(kwargs["env"][ralph_module.OWNERSHIP_MARKER_ENV], marker)
-        self.assertNotIn(marker, args[0])
-        self.assertNotEqual(ralph_module._marker_digest(marker), marker)
+        arm_read, arm_write = os.pipe()
+        ack_read, ack_write = os.pipe()
+        try:
+            with mock.patch.object(ralph_module.subprocess, "Popen") as popen:
+                ralph_module._spawn_backend(self.repo, marker, data, "a" * 64,
+                                            arm_read_fd=arm_read, acknowledgement_write_fd=ack_write)
+            args, kwargs = popen.call_args
+            self.assertIn("ralph_runner.py", args[0][1])
+            self.assertEqual(kwargs["env"][ralph_module.OWNERSHIP_MARKER_ENV], marker)
+            self.assertNotIn(marker, args[0])
+            self.assertNotEqual(ralph_module._marker_digest(marker), marker)
+            self.assertEqual(kwargs["pass_fds"], (arm_read, ack_write))
+            self.assertTrue(kwargs["close_fds"])
+        finally:
+            for fd in (arm_read, arm_write, ack_read, ack_write):
+                os.close(fd)
 
     def test_streaming_redaction_handles_every_8192_boundary_adjacent_and_eof_tail(self):
         token = b"token-boundary-123"
@@ -446,7 +488,7 @@ class RalphTests(unittest.TestCase):
         self.assertTrue(started.exists())
 
     def test_private_pre_popen_failures_roll_back_plan_before_supervisor_starts(self):
-        for failure in ("root", 1, 2, 3, 4):
+        for failure in ("root", 1, 2, 3):
             with self.subTest(failure=failure):
                 preparation = self.prepare()
                 if failure == "root":
@@ -488,50 +530,115 @@ class RalphTests(unittest.TestCase):
                     ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
                 self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
 
-    def test_unarmed_gate_timeout_or_close_publishes_failure_without_spawning_ralph(self):
-        for closed in (False, True):
-            with self.subTest(closed=closed):
-                data = self.root / f"runner-{closed}"
-                data.mkdir(mode=0o700)
-                launch_id = "d" * 64
-                stdout_name, stderr_name, receipt_name = ralph_module._private_names(launch_id)
-                gate_name = ralph_module._gate_name(launch_id)
-                for name, content in ((stdout_name, b""), (stderr_name, b""),
-                                      (receipt_name, b""), (gate_name, ralph_module._GATE_PENDING)):
-                    path = data / name
-                    path.write_bytes(content)
-                    path.chmod(0o600)
-                if closed:
-                    (data / gate_name).unlink()
-                with mock.patch.object(ralph_runner, "GATE_WAIT_SECONDS", 0.01), \
-                     mock.patch.dict(os.environ, self.env(), clear=False):
-                    self.assertEqual(ralph_runner.main([
-                        "--data-root", str(data), "--stdout-name", stdout_name,
-                        "--stderr-name", stderr_name, "--receipt-name", receipt_name,
-                        "--gate-name", gate_name,
-                    ]), 1)
-                receipt = read_ralph_receipt(data, launch_id)
-                self.assertEqual(receipt, {"status": "failed", "exit_code": 127})
-                self.assertFalse((self.root / "ralph-started").exists())
+    def test_delayed_pipe_arm_has_no_timeout_and_acknowledges_only_after_popen(self):
+        data = self.root / "runner-delayed"
+        data.mkdir(mode=0o700)
+        launch_id = "f" * 64
+        stdout_name, stderr_name, receipt_name = ralph_module._private_names(launch_id)
+        for name in (stdout_name, stderr_name, receipt_name):
+            path = data / name
+            path.write_bytes(b"")
+            path.chmod(0o600)
+        arm_read, arm_write = os.pipe()
+        ack_read, ack_write = os.pipe()
+        result = []
+        args = [
+            "--data-root", str(data), "--stdout-name", stdout_name,
+            "--stderr-name", stderr_name, "--receipt-name", receipt_name,
+            "--arm-fd", str(arm_read), "--ack-fd", str(ack_write),
+        ]
+        try:
+            with mock.patch.dict(os.environ, self.env(), clear=False):
+                runner = threading.Thread(target=lambda: result.append(ralph_runner.main(args)))
+                runner.start()
+                time.sleep(0.15)
+                self.assertTrue(runner.is_alive())
+                self.assertIsNone(read_ralph_receipt(data, launch_id))
+                os.set_blocking(ack_read, False)
+                with self.assertRaises(BlockingIOError):
+                    os.read(ack_read, 1)
+                os.set_blocking(ack_read, True)
+                self.assertEqual(os.write(arm_write, b"A"), 1)
+                os.close(arm_write)
+                arm_write = -1
+                self.assertEqual(os.read(ack_read, 1), b"S")
+                self.assertEqual(os.read(ack_read, 1), b"")
+                runner.join(5)
+            self.assertFalse(runner.is_alive())
+            self.assertEqual(result, [0])
+            self.assertEqual(read_ralph_receipt(data, launch_id), {"status": "completed", "exit_code": 0})
+        finally:
+            for fd in (arm_read, arm_write, ack_read, ack_write):
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
 
-    def test_pre_arm_gate_failure_reaps_restores_and_rolls_back(self):
-        self.ralph.write_text("#!/bin/sh\n[ \"${1:-}\" = \"-n\" ] && exit 0\nsleep 30\n")
-        self.ralph.chmod(0o755)
-        snapshot = {"persisted": False}
-        def on_spawn(_launch):
-            snapshot["persisted"] = True
-        def on_abort():
-            snapshot["persisted"] = False
-        with mock.patch.dict(os.environ, self.env(), clear=False), \
-             mock.patch.object(ralph_module, "KILL_GRACE_SECONDS", 0.05), \
-             mock.patch.object(ralph_module, "_arm_gate", side_effect=ralph_module._GateArmError(
-                 "injected arm failure", may_have_armed=False)):
-            with self.assertRaisesRegex(RalphError, "gate could not be armed"):
-                self.launch(self.prepare(), on_spawn=on_spawn, on_abort=on_abort)
-        self.assertFalse(snapshot["persisted"])
-        self.assertEqual(subprocess.check_output(
-            ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
-        self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+    def test_spawn_failure_receipt_returns_failure_ack_without_real_popen(self):
+        data = self.root / "runner-spawn-failure"
+        data.mkdir(mode=0o700)
+        launch_id = "9" * 64
+        stdout_name, stderr_name, receipt_name = ralph_module._private_names(launch_id)
+        for name in (stdout_name, stderr_name, receipt_name):
+            path = data / name
+            path.write_bytes(b"")
+            path.chmod(0o600)
+        arm_read, arm_write = os.pipe()
+        ack_read, ack_write = os.pipe()
+        result = []
+        args = [
+            "--data-root", str(data), "--stdout-name", stdout_name,
+            "--stderr-name", stderr_name, "--receipt-name", receipt_name,
+            "--arm-fd", str(arm_read), "--ack-fd", str(ack_write),
+        ]
+        try:
+            with mock.patch.dict(os.environ, {"PATH": ""}, clear=False):
+                runner = threading.Thread(target=lambda: result.append(ralph_runner.main(args)))
+                runner.start()
+                self.assertEqual(os.write(arm_write, b"A"), 1)
+                os.close(arm_write)
+                arm_write = -1
+                self.assertEqual(os.read(ack_read, 1), b"F")
+                self.assertEqual(os.read(ack_read, 1), b"")
+                runner.join(5)
+            self.assertEqual(result, [1])
+            self.assertEqual(read_ralph_receipt(data, launch_id), {"status": "spawn_failed"})
+        finally:
+            for fd in (arm_read, arm_write, ack_read, ack_write):
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_inherited_arm_pipe_eof_publishes_prearm_abort_without_spawning_ralph(self):
+        data = self.root / "runner-eof"
+        data.mkdir(mode=0o700)
+        launch_id = "d" * 64
+        stdout_name, stderr_name, receipt_name = ralph_module._private_names(launch_id)
+        for name in (stdout_name, stderr_name, receipt_name):
+            path = data / name
+            path.write_bytes(b"")
+            path.chmod(0o600)
+        arm_read, arm_write = os.pipe()
+        ack_read, ack_write = os.pipe()
+        try:
+            os.close(arm_write)
+            with mock.patch.dict(os.environ, self.env(), clear=False):
+                self.assertEqual(ralph_runner.main([
+                    "--data-root", str(data), "--stdout-name", stdout_name,
+                    "--stderr-name", stderr_name, "--receipt-name", receipt_name,
+                    "--arm-fd", str(arm_read), "--ack-fd", str(ack_write),
+                ]), 1)
+            self.assertEqual(read_ralph_receipt(data, launch_id), {"status": "prearm_aborted"})
+            self.assertEqual(os.read(ack_read, 1), b"")
+        finally:
+            for fd in (arm_read, ack_read, ack_write):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def test_identity_failure_reaps_unarmed_supervisor_without_spawning_ralph(self):
         started = self.root / "ralph-started"

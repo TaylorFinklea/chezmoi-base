@@ -23,11 +23,16 @@ from .hooks import (
     STRUCTURED_INPUT_MAX_BYTES,
     _hashed_name,
 )
-from .state import RepoIdentity, SecureJSONRecordStore, StateError, StateStore, ForgeState, transition
+from .state import (
+    RepoIdentity, SecureJSONRecordStore, StateError, StateStore, ForgeState, transition,
+    _state_from_payload, _state_payload,
+)
 from .verification import missing_verification_commands, verification_complete
 from .ralph import (
+    FileSnapshot,
     RalphError,
     RalphLaunchRecoveryError,
+    RalphPreparation,
     cancel_owned_ralph,
     inspect_ralph_eligibility,
     launch_ralph_dispatch,
@@ -35,6 +40,7 @@ from .ralph import (
     read_ralph_output,
     read_ralph_receipt,
     recover_ralph_status,
+    rollback_ralph_preparation,
 )
 
 HEARTBEAT_MAX_AGE_SECONDS = 5 * 60
@@ -43,6 +49,8 @@ MAX_QUESTION_BYTES = 4096
 MAX_FAILURE_BYTES = 2048
 MAX_QUESTIONS = 5
 MAX_RALPH_OUTPUT_BYTES = 4 * 1024
+MAX_RALPH_RECOVERY_BYTES = 2 * 1024 * 1024
+_RALPH_RECOVERY_VERSION = 1
 
 
 class CLIError(ValueError):
@@ -445,17 +453,176 @@ def _restore_ralph_launch_snapshot(root: Path, session: str, state: ForgeState,
                        "Ralph launch state restoration is uncertain") from failure
 
 
+def _recovery_payload(state: ForgeState, record: dict[str, Any] | None,
+                      preparation: RalphPreparation, launch_id: str,
+                      cwd: Path, repo: RepoIdentity | None) -> dict[str, Any]:
+    snapshots = []
+    for snapshot in preparation.snapshots:
+        snapshots.append({
+            "path": snapshot.path,
+            "existed": snapshot.existed,
+            "content": base64.b64encode(snapshot.content).decode("ascii"),
+        })
+    payload = {
+        "version": _RALPH_RECOVERY_VERSION,
+        "plugin_version": PLUGIN_VERSION,
+        "session_id": state.session_id,
+        "cwd": str(cwd),
+        "repo_root": str(repo.root) if repo is not None else None,
+        "git_dir": str(repo.git_dir) if repo is not None and repo.git_dir is not None else None,
+        "launch_id": launch_id,
+        "state": _state_payload(state),
+        "previous_ralph_record": record,
+        "preparation": {
+            "cwd": str(preparation.cwd),
+            "paths": list(preparation.paths),
+            "snapshots": snapshots,
+            "before_head": preparation.before_head,
+            "planning_commit": preparation.planning_commit,
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    if len(encoded) > MAX_RALPH_RECOVERY_BYTES:
+        raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery transaction is oversized")
+    return payload
+
+
+def _write_ralph_recovery(root: Path, session: str, state: ForgeState,
+                          record: dict[str, Any] | None, preparation: RalphPreparation,
+                          launch_id: str, cwd: Path, repo: RepoIdentity | None) -> None:
+    payload = _recovery_payload(state, record, preparation, launch_id, cwd, repo)
+    try:
+        _write_record(root, "ralph-recovery-", session, payload, exclusive=True)
+    except CLIError as exc:
+        raise CLIError("ralph_launch_recovery_required",
+                       "Ralph launch recovery transaction could not be persisted") from exc
+
+
+def _delete_ralph_recovery(root: Path, session: str) -> None:
+    _delete_record(root, "ralph-recovery-", session)
+    if _read_record(root, "ralph-recovery-", session) is not None:
+        raise CLIError("ralph_launch_recovery_required",
+                       "Ralph launch recovery transaction could not be removed")
+
+
+def _load_ralph_recovery(root: Path, session: str, cwd: Path,
+                         repo: RepoIdentity | None) -> tuple[ForgeState, dict[str, Any] | None,
+                                                               RalphPreparation, str] | None:
+    payload = _read_record(root, "ralph-recovery-", session)
+    if payload is None:
+        return None
+    required = {
+        "version", "plugin_version", "session_id", "cwd", "repo_root", "git_dir", "launch_id",
+        "state", "previous_ralph_record", "preparation",
+    }
+    expected_root = str(repo.root) if repo is not None else None
+    expected_git_dir = str(repo.git_dir) if repo is not None and repo.git_dir is not None else None
+    if (set(payload) != required or payload.get("version") != _RALPH_RECOVERY_VERSION or
+            payload.get("plugin_version") != PLUGIN_VERSION or payload.get("session_id") != session or
+            payload.get("cwd") != str(cwd) or payload.get("repo_root") != expected_root or
+            payload.get("git_dir") != expected_git_dir or not isinstance(payload.get("launch_id"), str) or
+            re.fullmatch(r"[0-9a-f]{64}", payload["launch_id"]) is None or
+            not isinstance(payload.get("state"), dict) or
+            payload.get("previous_ralph_record") is not None and not isinstance(payload.get("previous_ralph_record"), dict) or
+            not isinstance(payload.get("preparation"), dict)):
+        raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery transaction is malformed")
+    try:
+        snapshot_state = _state_from_payload(payload["state"])
+    except (StateError, ValueError, TypeError) as exc:
+        raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery state is malformed") from exc
+    if (snapshot_state.session_id != session or snapshot_state.cwd != cwd or
+            snapshot_state.status != "approved_ralph" or not _binding_matches(snapshot_state, cwd, repo)):
+        raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery binding is invalid")
+    raw_preparation = payload["preparation"]
+    required_preparation = {"cwd", "paths", "snapshots", "before_head", "planning_commit"}
+    if (set(raw_preparation) != required_preparation or raw_preparation.get("cwd") != str(cwd) or
+            not isinstance(raw_preparation.get("paths"), list) or
+            not all(isinstance(path, str) and path and "\x00" not in path for path in raw_preparation["paths"]) or
+            len(set(raw_preparation["paths"])) != len(raw_preparation["paths"]) or
+            not isinstance(raw_preparation.get("snapshots"), list) or
+            len(raw_preparation["snapshots"]) != len(raw_preparation["paths"]) or
+            not isinstance(raw_preparation.get("before_head"), str) or not raw_preparation["before_head"] or
+            not isinstance(raw_preparation.get("planning_commit"), str) or not raw_preparation["planning_commit"]):
+        raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery plan is malformed")
+    snapshots: list[FileSnapshot] = []
+    for expected_path, raw_snapshot in zip(raw_preparation["paths"], raw_preparation["snapshots"]):
+        if (not isinstance(raw_snapshot, dict) or set(raw_snapshot) != {"path", "existed", "content"} or
+                raw_snapshot.get("path") != expected_path or type(raw_snapshot.get("existed")) is not bool or
+                not isinstance(raw_snapshot.get("content"), str)):
+            raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery snapshot is malformed")
+        try:
+            content = base64.b64decode(raw_snapshot["content"].encode("ascii"), validate=True)
+        except (ValueError, UnicodeError) as exc:
+            raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery snapshot is malformed") from exc
+        if not raw_snapshot["existed"] and content:
+            raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery snapshot is malformed")
+        snapshots.append(FileSnapshot(expected_path, raw_snapshot["existed"], content))
+    try:
+        preparation = RalphPreparation(cwd, tuple(raw_preparation["paths"]), tuple(snapshots),
+                                       raw_preparation["before_head"], raw_preparation["planning_commit"])
+    except (TypeError, ValueError) as exc:
+        raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery plan is malformed") from exc
+    return snapshot_state, payload["previous_ralph_record"], preparation, payload["launch_id"]
+
+
+def _reconcile_ralph_recovery(state: ForgeState, root: Path, session: str, cwd: Path,
+                              repo: RepoIdentity | None) -> tuple[ForgeState, dict[str, Any]] | None:
+    try:
+        recovery = _load_ralph_recovery(root, session, cwd, repo)
+    except CLIError:
+        return state, {"owned": False, "running": False, "terminal": "recovery-required"}
+    if recovery is None:
+        return None
+    snapshot_state, snapshot_record, preparation, launch_id = recovery
+    try:
+        receipt = read_ralph_receipt(root, launch_id)
+    except RalphError:
+        return state, {"owned": False, "running": False, "terminal": "recovery-required"}
+    if receipt is None:
+        return state, {"owned": False, "running": False, "terminal": "recovery-required"}
+    if receipt["status"] in {"prearm_aborted", "spawn_failed"}:
+        try:
+            _restore_ralph_launch_snapshot(root, session, snapshot_state, snapshot_record)
+            rollback_ralph_preparation(preparation)
+            _delete_ralph_recovery(root, session)
+        except Exception:
+            return state, {"owned": False, "running": False, "terminal": "recovery-required"}
+        return snapshot_state, {"owned": False, "running": False, "terminal": receipt["status"]}
+    if receipt["status"] in {"spawned", "running", "completed", "failed"}:
+        # This is the durable real-Popen proof.  Never restore snapshots or
+        # reset HEAD from this point, even if later lifecycle data is damaged.
+        try:
+            _delete_ralph_recovery(root, session)
+        except CLIError:
+            return state, {"owned": False, "running": False, "terminal": "recovery-required"}
+        return None
+    return state, {"owned": False, "running": False, "terminal": "recovery-required"}
+
+
 def ralph_launch() -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session)
     _ralph_state(state, "approved_ralph")
     brief = _ralph_brief(root, session)
     original_ralph_record = _read_record(root, "ralph-", session)
+    if _read_record(root, "ralph-recovery-", session) is not None:
+        raise CLIError("ralph_launch_recovery_required",
+                       "an earlier Ralph launch requires recovery before another launch")
     try:
         preparation = prepare_ralph_dispatch(brief, cwd)
     except (RalphError, OSError) as exc:
         raise CLIError("ralph_prepare_failed", str(exc)) from exc
     launch_id = secrets.token_hex(32)
+    try:
+        _write_ralph_recovery(root, session, state, original_ralph_record,
+                              preparation, launch_id, cwd, repo)
+    except CLIError as exc:
+        try:
+            rollback_ralph_preparation(preparation)
+        except Exception as rollback_exc:
+            raise CLIError("ralph_launch_recovery_required",
+                           "Ralph planning rollback is uncertain; recovery is required") from rollback_exc
+        raise exc
 
     def on_spawn(launch: Any) -> None:
         payload = {
@@ -480,9 +647,16 @@ def ralph_launch() -> dict[str, Any]:
     def on_abort() -> None:
         _restore_ralph_launch_snapshot(root, session, state, original_ralph_record)
 
+    def on_rollback() -> None:
+        _delete_ralph_recovery(root, session)
+
+    def on_spawn_proven() -> None:
+        _delete_ralph_recovery(root, session)
+
     try:
         launch_ralph_dispatch(preparation, data_root=root, launch_id=launch_id,
-                              on_spawn=on_spawn, on_abort=on_abort)
+                              on_spawn=on_spawn, on_abort=on_abort,
+                              on_rollback=on_rollback, on_spawn_proven=on_spawn_proven)
     except RalphLaunchRecoveryError as exc:
         raise CLIError("ralph_launch_recovery_required", str(exc)) from exc
     except CLIError:
@@ -528,6 +702,10 @@ def _terminal_transition(state: ForgeState, root: Path, exit_code: int) -> Forge
 
 def _reconcile_ralph(state: ForgeState, root: Path, session: str, cwd: Path,
                      repo: RepoIdentity | None) -> tuple[ForgeState, dict[str, Any], dict[str, Any] | None]:
+    recovered_transaction = _reconcile_ralph_recovery(state, root, session, cwd, repo)
+    if recovered_transaction is not None:
+        recovered_state, public = recovered_transaction
+        return recovered_state, public, None
     raw = _read_record(root, "ralph-", session)
     if raw is None:
         if state.status == "ralph_running":
@@ -554,13 +732,6 @@ def _reconcile_ralph(state: ForgeState, root: Path, session: str, cwd: Path,
     return state, {"owned": bool(recovered.get("owned")), "running": False, "terminal": "missing"}, record
 
 
-def _ralph_status_for_state(state: ForgeState, root: Path, session: str) -> dict[str, Any]:
-    if state.status not in {"approved_ralph", "ralph_running", "completed", "failed", "cancelled"}:
-        return {"owned": False, "running": False, "terminal": "not-started"}
-    _state, public, _record = _reconcile_ralph(state, root, session, state.cwd, state.repo)
-    return public
-
-
 def ralph_status() -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session, heartbeat=False)
@@ -584,6 +755,8 @@ def ralph_cancel() -> dict[str, Any]:
     state, cwd, repo = _load_bound(root, session, heartbeat=False)
     _ralph_state(state, "ralph_running")
     state, public, record = _reconcile_ralph(state, root, session, cwd, repo)
+    if public.get("terminal") == "recovery-required":
+        raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery is required before cancellation")
     if state.status != "ralph_running":
         return {"ok": True, "status": state.status, **public}
     if record is None:
@@ -607,6 +780,8 @@ def complete() -> dict[str, Any]:
     state, cwd, repo = _load_bound(root, session)
     if state.status == "ralph_running":
         state, public, _ = _reconcile_ralph(state, root, session, cwd, repo)
+        if public.get("terminal") == "recovery-required":
+            raise CLIError("ralph_launch_recovery_required", "Ralph launch recovery is required before completion")
         if state.status == "completed":
             return {"ok": True, "status": "completed", "ralph": public}
         if state.status == "failed":

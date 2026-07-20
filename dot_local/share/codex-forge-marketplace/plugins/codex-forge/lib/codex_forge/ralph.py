@@ -28,8 +28,9 @@ KILL_GRACE_SECONDS = 2.0
 FORGE_PATHS = (".docs/ai/current-state.md", ".docs/ai/roadmap.md")
 OWNERSHIP_MARKER_ENV = "CODEX_FORGE_RALPH_OWNERSHIP_MARKER"
 _MARKER_DIGEST_BYTES = 32
-_GATE_PENDING = b"waiting\n"
-_GATE_ARMED = b"armed\n"
+_ARM_BYTE = b"A"
+_ACK_SPAWNED = b"S"
+_ACK_SPAWN_FAILED = b"F"
 
 
 class RalphError(RuntimeError):
@@ -38,12 +39,6 @@ class RalphError(RuntimeError):
 
 class RalphLaunchRecoveryError(RalphError):
     """A pre-arm launch could not prove its private state was restored."""
-
-
-class _GateArmError(RalphError):
-    def __init__(self, message: str, *, may_have_armed: bool):
-        super().__init__(message)
-        self.may_have_armed = may_have_armed
 
 
 @dataclass(frozen=True)
@@ -331,6 +326,11 @@ def _rollback(preparation: RalphPreparation) -> None:
                               preparation.before_head, "", preparation.planning_commit)
 
 
+def rollback_ralph_preparation(preparation: RalphPreparation) -> None:
+    """Undo only a still-proven Forge planning commit before real Ralph Popen."""
+    _rollback(preparation)
+
+
 def _restore_preparation_failure(cwd: Path, snapshots: Sequence[FileSnapshot], paths: Sequence[str]) -> None:
     restore_error: Exception | None = None
     try:
@@ -569,11 +569,6 @@ def _private_names(launch_id: str) -> tuple[str, str, str]:
             f"ralph-receipt-{launch_id}.json")
 
 
-def _gate_name(launch_id: str) -> str:
-    _private_names(launch_id)
-    return f"ralph-gate-{launch_id}.gate"
-
-
 def _private_root(root: Path) -> Path:
     candidate = Path(root)
     try:
@@ -618,48 +613,6 @@ def _private_regular(path: Path) -> os.stat_result:
     return info
 
 
-def _arm_gate(root: Path, launch_id: str) -> None:
-    """Durably arm the one-use gate, distinguishing an unsafe post-write error."""
-    path = root / _gate_name(launch_id)
-    try:
-        expected = _private_regular(path)
-        fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
-    except RalphError as exc:
-        raise _GateArmError("Ralph supervisor gate is unavailable", may_have_armed=False) from exc
-    except OSError as exc:
-        raise _GateArmError("Ralph supervisor gate is unavailable", may_have_armed=False) from exc
-    may_have_armed = False
-    try:
-        observed = os.fstat(fd)
-        if (not stat.S_ISREG(observed.st_mode) or observed.st_ino != expected.st_ino or
-                observed.st_dev != expected.st_dev):
-            raise _GateArmError("Ralph supervisor gate changed", may_have_armed=False)
-        os.lseek(fd, 0, os.SEEK_SET)
-        current = os.read(fd, max(len(_GATE_PENDING), len(_GATE_ARMED)) + 1)
-        if os.read(fd, 1) or current == _GATE_ARMED:
-            raise _GateArmError("Ralph supervisor gate was already armed", may_have_armed=True)
-        if current != _GATE_PENDING:
-            raise _GateArmError("Ralph supervisor gate is invalid", may_have_armed=False)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.ftruncate(fd, 0)
-        view = memoryview(_GATE_ARMED)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError("could not arm Ralph supervisor gate")
-            view = view[written:]
-            if not view:
-                may_have_armed = True
-        os.fsync(fd)
-    except _GateArmError:
-        raise
-    except OSError as exc:
-        raise _GateArmError("Ralph supervisor gate could not be armed",
-                            may_have_armed=may_have_armed) from exc
-    finally:
-        os.close(fd)
-
-
 def _read_private_json(root: Path, name: str) -> dict[str, Any] | None:
     try:
         root = _private_root(root)
@@ -678,12 +631,18 @@ def _receipt(launch: RalphLaunch, data_root: Path) -> dict[str, Any] | None:
     if value is None:
         return None
     status = value.get("status")
-    if value.get("version") != 1 or status not in {"running", "completed", "failed"}:
+    if value.get("version") != 1 or status not in {
+        "prearm_aborted", "spawn_failed", "spawned", "running", "completed", "failed",
+    }:
         raise RalphError("Ralph terminal receipt is malformed or inaccessible")
-    if status == "running":
+    if status in {"spawned", "running"}:
         if type(value.get("ralph_pid")) is not int or value["ralph_pid"] <= 0:
             raise RalphError("Ralph terminal receipt is malformed or inaccessible")
-        return {"status": "running"}
+        return {"status": status}
+    if status in {"prearm_aborted", "spawn_failed"}:
+        if not isinstance(value.get("completed_at"), (int, float)):
+            raise RalphError("Ralph terminal receipt is malformed or inaccessible")
+        return {"status": status}
     if type(value.get("exit_code")) is not int or not isinstance(value.get("completed_at"), (int, float)):
         raise RalphError("Ralph terminal receipt is malformed or inaccessible")
     return {"status": status, "exit_code": value["exit_code"]}
@@ -721,17 +680,21 @@ def read_ralph_output(data_root: Path, launch_id: str, stream: str, *, limit: in
     return raw.decode("utf-8", "replace")
 
 
-def _spawn_backend(cwd: Path, marker: str, data_root: Path, launch_id: str) -> subprocess.Popen[bytes]:
-    """Start an unarmed detached supervisor that owns Ralph's process group."""
+def _spawn_backend(cwd: Path, marker: str, data_root: Path, launch_id: str, *,
+                   arm_read_fd: int, acknowledgement_write_fd: int) -> subprocess.Popen[bytes]:
+    """Start a detached supervisor blocked on inherited close-on-exec pipes."""
     stdout_name, stderr_name, receipt_name = _private_names(launch_id)
     environment = dict(os.environ)
     environment[OWNERSHIP_MARKER_ENV] = marker
     runner = Path(__file__).with_name("ralph_runner.py")
-    return subprocess.Popen([sys.executable, str(runner), "--data-root", str(data_root),
-                             "--stdout-name", stdout_name, "--stderr-name", stderr_name,
-                             "--receipt-name", receipt_name, "--gate-name", _gate_name(launch_id)],
-                            cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, start_new_session=True, env=environment)
+    return subprocess.Popen([
+        sys.executable, str(runner), "--data-root", str(data_root),
+        "--stdout-name", stdout_name, "--stderr-name", stderr_name,
+        "--receipt-name", receipt_name, "--arm-fd", str(arm_read_fd),
+        "--ack-fd", str(acknowledgement_write_fd),
+    ], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+       stderr=subprocess.DEVNULL, start_new_session=True, env=environment,
+       close_fds=True, pass_fds=(arm_read_fd, acknowledgement_write_fd))
 
 
 def _group_exists(pgid: int) -> bool:
@@ -808,14 +771,49 @@ def _terminate_owned_group(expected: ProcessIdentity, child: subprocess.Popen[by
         _terminate_child(child, grace_seconds=grace_seconds)
 
 
-def _abort_unarmed_supervisor(preparation: RalphPreparation, child: subprocess.Popen[bytes],
+def _close_fd(fd: int | None) -> None:
+    if fd is None or fd < 0:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _launch_pipes() -> tuple[int, int, int, int]:
+    """Return supervisor-arm, parent-arm, parent-ack, supervisor-ack FDs.
+
+    Every descriptor is close-on-exec in the launcher.  `pass_fds` is the only
+    inheritance route into the supervisor, so a launcher crash turns the arm
+    reader into EOF rather than an ambiguous durable-file poll.
+    """
+    arm_read, arm_write = os.pipe()
+    acknowledgement_read, acknowledgement_write = os.pipe()
+    try:
+        for fd in (arm_read, arm_write, acknowledgement_read, acknowledgement_write):
+            os.set_inheritable(fd, False)
+        return arm_read, arm_write, acknowledgement_read, acknowledgement_write
+    except Exception:
+        for fd in (arm_read, arm_write, acknowledgement_read, acknowledgement_write):
+            _close_fd(fd)
+        raise
+
+
+def _abort_unarmed_supervisor(preparation: RalphPreparation, child: subprocess.Popen[bytes] | None,
                               identity: ProcessIdentity | None,
-                              on_abort: Callable[[], None] | None) -> None:
-    """Reap an unarmed supervisor, restore caller state, then undo only our plan."""
-    if identity is None:
-        _terminate_child(child, grace_seconds=KILL_GRACE_SECONDS)
-    else:
-        _terminate_owned_group(identity, child, grace_seconds=KILL_GRACE_SECONDS)
+                              on_abort: Callable[[], None] | None,
+                              on_rollback: Callable[[], None] | None) -> None:
+    """Reap a proven-unarmed supervisor and complete the durable rollback.
+
+    State/record restoration is deliberately proven before the HEAD-guarded
+    Git rollback.  Any uncertainty leaves the recovery transaction in place
+    and is always surfaced as `RalphLaunchRecoveryError`.
+    """
+    if child is not None:
+        if identity is None:
+            _terminate_child(child, grace_seconds=KILL_GRACE_SECONDS)
+        else:
+            _terminate_owned_group(identity, child, grace_seconds=KILL_GRACE_SECONDS)
     try:
         if on_abort is not None:
             on_abort()
@@ -827,71 +825,161 @@ def _abort_unarmed_supervisor(preparation: RalphPreparation, child: subprocess.P
     except Exception as exc:
         raise RalphLaunchRecoveryError(
             "Ralph planning rollback is uncertain; recovery is required") from exc
+    try:
+        if on_rollback is not None:
+            on_rollback()
+    except Exception as exc:
+        raise RalphLaunchRecoveryError(
+            "Ralph launch cleanup is uncertain; recovery is required") from exc
+
+
+def _no_spawn_receipt(root: Path, launch: RalphLaunch) -> bool:
+    try:
+        receipt = _receipt(launch, root)
+    except RalphError:
+        return False
+    return receipt is not None and receipt.get("status") in {"prearm_aborted", "spawn_failed"}
+
+
+def _read_exact_ack(fd: int) -> bytes:
+    first = os.read(fd, 1)
+    # The supervisor closes its acknowledgement descriptor immediately after
+    # one byte.  EOF is part of the exact one-byte acknowledgement contract.
+    tail = os.read(fd, 1)
+    if tail:
+        return b""
+    return first
 
 
 def launch_ralph_dispatch(preparation: RalphPreparation, *, data_root: Path,
                           launch_id: str, on_spawn: Callable[[RalphLaunch], None] | None = None,
-                          on_abort: Callable[[], None] | None = None) -> RalphLaunch:
-    """Persist ownership before arming a detached supervisor to start real Ralph.
+                          on_abort: Callable[[], None] | None = None,
+                          on_rollback: Callable[[], None] | None = None,
+                          on_spawn_proven: Callable[[], None] | None = None) -> RalphLaunch:
+    """Launch Ralph behind a one-byte inherited-pipe arm/acknowledgement gate.
 
-    Private files, gate validation, and supervisor startup are rollback-safe
-    until the one-use gate is armed. The arm write is the non-rewind boundary:
-    it is the first point at which the supervisor may execute real Ralph.
+    The callback persists the validated supervisor identity and `ralph_running`
+    state before this function writes its sole arm byte.  The real Ralph Popen
+    is impossible before that byte; success is impossible before the matching
+    post-Popen acknowledgement and a fresh supervisor identity check.
     """
     child: subprocess.Popen[bytes] | None = None
     identity: ProcessIdentity | None = None
+    arm_read: int | None = None
+    arm_write: int | None = None
+    acknowledgement_read: int | None = None
+    acknowledgement_write: int | None = None
     root: Path | None = None
+    launch: RalphLaunch | None = None
     try:
         root = _private_root(data_root)
         stdout_name, stderr_name, receipt_name = _private_names(launch_id)
-        gate_name = _gate_name(launch_id)
-        # Receipt and gate are created and checked before Popen, so all private
-        # filesystem faults share the preparation rollback transaction.
-        for name, content in ((stdout_name, b""), (stderr_name, b""),
-                              (receipt_name, b""), (gate_name, _GATE_PENDING)):
-            _create_private_file(root, name, content)
+        # All private filesystem failures occur before Popen and use the same
+        # state + plan recovery transaction as any later pre-arm abort.
+        for name in (stdout_name, stderr_name, receipt_name):
+            _create_private_file(root, name)
             _private_regular(root / name)
+        arm_read, arm_write, acknowledgement_read, acknowledgement_write = _launch_pipes()
         marker = secrets.token_urlsafe(_MARKER_DIGEST_BYTES)
         marker_digest = _marker_digest(marker)
-        child = _spawn_backend(preparation.cwd, marker, root, launch_id)
+        child = _spawn_backend(preparation.cwd, marker, root, launch_id,
+                               arm_read_fd=arm_read,
+                               acknowledgement_write_fd=acknowledgement_write)
     except Exception as exc:
-        if child is None:
-            _rollback(preparation)
-            if isinstance(exc, RalphError):
-                raise
-            raise RalphError("Ralph launch failed before spawn") from exc
-        # Popen succeeded but the supervisor is still unarmed; it cannot have
-        # started Ralph, so terminate/reap it before reverting the plan.
-        _abort_unarmed_supervisor(preparation, child, identity, on_abort)
-        raise RalphError("Ralph launch failed before arming") from exc
+        _close_fd(arm_read)
+        _close_fd(arm_write)
+        _close_fd(acknowledgement_read)
+        _close_fd(acknowledgement_write)
+        try:
+            _abort_unarmed_supervisor(preparation, child, identity, on_abort, on_rollback)
+        except RalphLaunchRecoveryError:
+            raise
+        if isinstance(exc, RalphError):
+            raise
+        raise RalphError("Ralph launch failed before spawn") from exc
+    finally:
+        # The supervisor inherited only these explicitly passed descriptors.
+        _close_fd(arm_read)
+        arm_read = None
+        _close_fd(acknowledgement_write)
+        acknowledgement_write = None
 
     identity = _identity(child.pid, marker_digest)
     if identity is None:
-        _abort_unarmed_supervisor(preparation, child, None, on_abort)
+        _close_fd(arm_write)
+        arm_write = None
+        _close_fd(acknowledgement_read)
+        acknowledgement_read = None
+        _abort_unarmed_supervisor(preparation, child, None, on_abort, on_rollback)
         raise RalphError("Ralph process identity could not be established")
     launch = RalphLaunch(ProcessIdentity(identity.pid, identity.start, identity.pgid,
                                          encode_marker_digest(identity.marker_digest)),
                         launch_id, stdout_name, stderr_name, receipt_name)
     try:
-        if on_spawn:
+        if on_spawn is not None:
             on_spawn(launch)
     except Exception:
-        _abort_unarmed_supervisor(preparation, child, identity, on_abort)
+        _close_fd(arm_write)
+        arm_write = None
+        _close_fd(acknowledgement_read)
+        acknowledgement_read = None
+        _abort_unarmed_supervisor(preparation, child, identity, on_abort, on_rollback)
         raise
+
     try:
-        _arm_gate(root, launch_id)
-    except _GateArmError as exc:
-        if exc.may_have_armed:
-            # The runner may already have consumed the arm byte. Its persisted
-            # ownership record remains the only safe recovery route, so never
-            # rewind Git or restore lifecycle state here.
-            threading.Thread(target=child.wait, daemon=True).start()
-            raise RalphLaunchRecoveryError(
-                "Ralph gate arm is uncertain; persisted launch recovery is required") from exc
-        _abort_unarmed_supervisor(preparation, child, identity, on_abort)
-        raise RalphError("Ralph supervisor gate could not be armed") from exc
-    # Reap the detached supervisor in a live CLI process without making launch
-    # synchronous. Status/cancel retain identity checks after this CLI exits.
+        # A one-byte PIPE_BUF write is atomic. Closing immediately afterwards
+        # makes a launcher crash before this point observable as prearm EOF.
+        if os.write(arm_write, _ARM_BYTE) != len(_ARM_BYTE):
+            raise OSError("short Ralph arm write")
+        _close_fd(arm_write)
+        arm_write = None
+        acknowledgement = _read_exact_ack(acknowledgement_read)
+    except OSError as exc:
+        _close_fd(arm_write)
+        arm_write = None
+        _close_fd(acknowledgement_read)
+        acknowledgement_read = None
+        # A failed write/read may race a delivered arm.  Rewind only when the
+        # receipt positively proves no Ralph Popen; otherwise status recovery
+        # owns the durable transaction and Git is left untouched.
+        if launch is not None and root is not None and _no_spawn_receipt(root, launch):
+            _abort_unarmed_supervisor(preparation, child, identity, on_abort, on_rollback)
+            raise RalphError("Ralph supervisor failed before Ralph spawn") from exc
+        threading.Thread(target=child.wait, daemon=True).start()
+        raise RalphLaunchRecoveryError(
+            "Ralph arm acknowledgement is uncertain; recovery is required") from exc
+    finally:
+        _close_fd(acknowledgement_read)
+        acknowledgement_read = None
+
+    if acknowledgement == _ACK_SPAWN_FAILED:
+        if root is not None and launch is not None and _no_spawn_receipt(root, launch):
+            _abort_unarmed_supervisor(preparation, child, identity, on_abort, on_rollback)
+            raise RalphError("Ralph supervisor could not start Ralph")
+        threading.Thread(target=child.wait, daemon=True).start()
+        raise RalphLaunchRecoveryError(
+            "Ralph spawn failure acknowledgement is not durable; recovery is required")
+    if acknowledgement != _ACK_SPAWNED:
+        # No exact post-Popen acknowledgement means no launch success.  EOF or
+        # a malformed byte can still be rolled back, but only after the receipt
+        # positively proves that real Ralph never reached Popen.
+        if root is not None and launch is not None and _no_spawn_receipt(root, launch):
+            _abort_unarmed_supervisor(preparation, child, identity, on_abort, on_rollback)
+            raise RalphError("Ralph supervisor failed before Ralph spawn")
+        threading.Thread(target=child.wait, daemon=True).start()
+        raise RalphLaunchRecoveryError(
+            "Ralph arm acknowledgement is uncertain; recovery is required")
+    if _matching_process_identity(identity) is None:
+        threading.Thread(target=child.wait, daemon=True).start()
+        raise RalphLaunchRecoveryError(
+            "Ralph supervisor identity is no longer live; recovery is required")
+    try:
+        if on_spawn_proven is not None:
+            on_spawn_proven()
+    except Exception as exc:
+        threading.Thread(target=child.wait, daemon=True).start()
+        raise RalphLaunchRecoveryError(
+            "Ralph spawn proof cleanup is uncertain; recovery is required") from exc
     threading.Thread(target=child.wait, daemon=True).start()
     return launch
 

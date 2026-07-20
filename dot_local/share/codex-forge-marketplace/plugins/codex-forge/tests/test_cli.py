@@ -14,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from codex_forge import cli as cli_module
+from codex_forge.ralph import FileSnapshot, RalphPreparation
 from codex_forge.state import StateError, StateStore, transition
 
 
@@ -193,12 +194,14 @@ class CLITests(unittest.TestCase):
 
         preparation = SimpleNamespace(planning_commit="planning-commit")
         marker_digest = "a" * 64
-        def launch(prepared, *, data_root, launch_id, on_spawn, on_abort):
+        def launch(prepared, *, data_root, launch_id, on_spawn, on_abort, on_rollback, on_spawn_proven):
             self.assertIs(prepared, preparation)
             on_spawn(SimpleNamespace(identity=SimpleNamespace(pid=123, pgid=123, start="started", marker_digest=base64.urlsafe_b64encode(bytes.fromhex(marker_digest)).decode("ascii")), launch_id=launch_id))
+            on_spawn_proven()
             return SimpleNamespace(launch_id=launch_id)
 
         with mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
+             mock.patch.object(cli_module, "_write_ralph_recovery"), \
              mock.patch.object(cli_module, "launch_ralph_dispatch", side_effect=launch):
             launched = self.invoke_cli("ralph-launch")
         self.assertEqual(launched, {"ok": True, "status": "ralph_running", "planning_commit": "planning-commit"})
@@ -248,16 +251,18 @@ class CLITests(unittest.TestCase):
                 raise StateError("injected callback persistence failure")
             return original_replace(instance, next_state)
 
-        def launch(_prepared, *, data_root, launch_id, on_spawn, on_abort):
+        def launch(_prepared, *, data_root, launch_id, on_spawn, on_abort, on_rollback, on_spawn_proven):
             try:
                 on_spawn(SimpleNamespace(identity=SimpleNamespace(
                     pid=123, pgid=123, start="started", marker_digest=marker), launch_id=launch_id))
             except Exception:
                 on_abort()
+                on_rollback()
                 raise
             self.fail("callback should fail before arming")
 
         with mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
+             mock.patch.object(cli_module, "_write_ralph_recovery"), \
              mock.patch.object(cli_module, "launch_ralph_dispatch", side_effect=launch), \
              mock.patch.object(StateStore, "replace", fail_running_replace):
             with self.assertRaises(cli_module.CLIError) as failure:
@@ -265,6 +270,115 @@ class CLITests(unittest.TestCase):
         self.assertEqual(failure.exception.code, "state_write_failed")
         self.assertEqual(store.load(self.session), state)
         self.assertFalse((self.data / f"ralph-{digest_name}.json").exists())
+
+    def test_callback_then_launcher_crash_leaves_recoverable_prearm_transaction(self):
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        approved = transition(transition(store.load(self.session), "freeze"), "approve_ralph")
+        store.replace(approved)
+        ralph_brief = {**BRIEF, "dispatcher": "ralph", "phases": [
+            {"name": "implement", "tier_floor": "senior", "verify": "python3 -m unittest"},
+            {"name": "document", "tier_floor": "junior", "verify": "python3 -m py_compile"},
+        ]}
+        digest_name = hashlib.sha256(self.session.encode()).hexdigest()
+        (self.data / f"brief-{digest_name}.json").write_text(json.dumps({"digest": "ralph-digest", "brief": ralph_brief}))
+        preparation = RalphPreparation(self.cwd, (".docs/ai/current-state.md",),
+                                       (FileSnapshot(".docs/ai/current-state.md", False),),
+                                       "before", "plan")
+        marker = base64.urlsafe_b64encode(bytes.fromhex("a" * 64)).decode("ascii")
+        def crash_after_callback(_prepared, *, data_root, launch_id, on_spawn, on_abort, on_rollback, on_spawn_proven):
+            on_spawn(SimpleNamespace(identity=SimpleNamespace(
+                pid=123, pgid=123, start="started", marker_digest=marker), launch_id=launch_id))
+            raise cli_module.RalphLaunchRecoveryError("launcher crashed before arm")
+        with mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
+             mock.patch.object(cli_module, "launch_ralph_dispatch", side_effect=crash_after_callback):
+            with self.assertRaises(cli_module.CLIError) as failure:
+                self.invoke_cli("ralph-launch")
+        self.assertEqual(failure.exception.code, "ralph_launch_recovery_required")
+        self.assertEqual(store.load(self.session).status, "ralph_running")
+        self.assertTrue((self.data / f"ralph-recovery-{digest_name}.json").exists())
+        with mock.patch.object(cli_module, "read_ralph_receipt", return_value={"status": "prearm_aborted"}), \
+             mock.patch.object(cli_module, "rollback_ralph_preparation") as rollback:
+            body = self.invoke_cli("status")
+        self.assertEqual(body["status"], "approved_ralph")
+        self.assertEqual(body["ralph"]["terminal"], "prearm_aborted")
+        rollback.assert_called_once_with(preparation)
+
+    def test_restart_prearm_receipt_restores_durable_transaction_before_git_rollback(self):
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        approved = transition(transition(store.load(self.session), "freeze"), "approve_ralph")
+        running = transition(approved, "ralph_start")
+        store.replace(running)
+        launch_id = "e" * 64
+        marker = base64.urlsafe_b64encode(bytes.fromhex("a" * 64)).decode("ascii")
+        cli_module._write_record(self.data, "ralph-", self.session, {
+            "plugin_version": "0.1.0", "session_id": self.session, "cwd": str(self.cwd),
+            "repo_root": None, "git_dir": None, "planning_commit": "plan", "pid": 1,
+            "pgid": 1, "start": "start", "marker_digest": marker, "launch_id": launch_id,
+        })
+        preparation = RalphPreparation(self.cwd, (".docs/ai/current-state.md",),
+                                       (FileSnapshot(".docs/ai/current-state.md", False),),
+                                       "before", "plan")
+        cli_module._write_ralph_recovery(self.data, self.session, approved, None,
+                                         preparation, launch_id, self.cwd, None)
+        with mock.patch.object(cli_module, "read_ralph_receipt", return_value={"status": "prearm_aborted"}), \
+             mock.patch.object(cli_module, "rollback_ralph_preparation") as rollback:
+            body = self.invoke_cli("status")
+        self.assertEqual(body["status"], "approved_ralph")
+        self.assertEqual(body["ralph"]["terminal"], "prearm_aborted")
+        self.assertNotIn("preparation", json.dumps(body))
+        self.assertEqual(store.load(self.session), approved)
+        self.assertFalse((self.data / f"ralph-{hashlib.sha256(self.session.encode()).hexdigest()}.json").exists())
+        self.assertFalse((self.data / f"ralph-recovery-{hashlib.sha256(self.session.encode()).hexdigest()}.json").exists())
+        rollback.assert_called_once_with(preparation)
+
+    def test_spawn_proof_never_rewinds_durable_transaction(self):
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        approved = transition(transition(store.load(self.session), "freeze"), "approve_ralph")
+        running = transition(approved, "ralph_start")
+        store.replace(running)
+        launch_id = "f" * 64
+        marker = base64.urlsafe_b64encode(bytes.fromhex("a" * 64)).decode("ascii")
+        record = {
+            "plugin_version": "0.1.0", "session_id": self.session, "cwd": str(self.cwd),
+            "repo_root": None, "git_dir": None, "planning_commit": "plan", "pid": 1,
+            "pgid": 1, "start": "start", "marker_digest": marker, "launch_id": launch_id,
+        }
+        cli_module._write_record(self.data, "ralph-", self.session, record)
+        preparation = RalphPreparation(self.cwd, (".docs/ai/current-state.md",),
+                                       (FileSnapshot(".docs/ai/current-state.md", False),),
+                                       "before", "plan")
+        cli_module._write_ralph_recovery(self.data, self.session, approved, None,
+                                         preparation, launch_id, self.cwd, None)
+        with mock.patch.object(cli_module, "read_ralph_receipt", return_value={"status": "spawned"}), \
+             mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": True}), \
+             mock.patch.object(cli_module, "rollback_ralph_preparation") as rollback:
+            body = self.invoke_cli("status")
+        self.assertEqual(body["status"], "ralph_running")
+        self.assertEqual(body["ralph"]["terminal"], "running")
+        rollback.assert_not_called()
+        self.assertTrue((self.data / f"ralph-{hashlib.sha256(self.session.encode()).hexdigest()}.json").exists())
+        self.assertFalse((self.data / f"ralph-recovery-{hashlib.sha256(self.session.encode()).hexdigest()}.json").exists())
+
+    def test_recovery_rollback_failure_is_fail_closed(self):
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        approved = transition(transition(store.load(self.session), "freeze"), "approve_ralph")
+        running = transition(approved, "ralph_start")
+        store.replace(running)
+        launch_id = "1" * 64
+        preparation = RalphPreparation(self.cwd, (".docs/ai/current-state.md",),
+                                       (FileSnapshot(".docs/ai/current-state.md", False),),
+                                       "before", "plan")
+        cli_module._write_ralph_recovery(self.data, self.session, approved, None,
+                                         preparation, launch_id, self.cwd, None)
+        with mock.patch.object(cli_module, "read_ralph_receipt", return_value={"status": "spawn_failed"}), \
+             mock.patch.object(cli_module, "rollback_ralph_preparation", side_effect=cli_module.RalphError("no rollback")):
+            body = self.invoke_cli("status")
+        self.assertEqual(body["ralph"]["terminal"], "recovery-required")
+        self.assertTrue((self.data / f"ralph-recovery-{hashlib.sha256(self.session.encode()).hexdigest()}.json").exists())
 
     def test_status_reconciles_ralph_once_and_uses_that_same_snapshot(self):
         self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
