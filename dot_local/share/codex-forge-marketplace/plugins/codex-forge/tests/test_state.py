@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import os
 import stat
@@ -9,6 +10,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from codex_forge.state import ForgeState, RepoIdentity, StateError, StateStore, transition
+
+
+_MAX_RECORD_BYTES = 10 * 1024 * 1024
 
 
 class StateTests(unittest.TestCase):
@@ -61,11 +65,25 @@ class StateTests(unittest.TestCase):
                 with self.subTest(status=status, event=event):
                     self.assertIn(transition(source, event).status, ("cancelled", "failed"))
 
-    def test_rejects_disallowed_transitions(self):
-        for status, event in (("shaping", "approve_direct"), ("frozen", "begin"), ("completed", "cancel"), ("cancelled", "fail"), ("ralph_running", "approve_direct")):
+    def test_rejects_every_disallowed_transition(self):
+        allowed = {
+            "shaping": {"freeze", "cancel", "fail"},
+            "frozen": {"revise", "approve_direct", "approve_ralph", "cancel", "fail"},
+            "approved_direct": {"begin", "cancel", "fail"},
+            "approved_ralph": {"ralph_start", "cancel", "fail"},
+            "executing": {"complete", "cancel", "fail"},
+            "ralph_running": {"complete", "cancel", "fail"},
+            "completed": set(),
+            "cancelled": set(),
+            "failed": set(),
+        }
+        events = {"freeze", "revise", "approve_direct", "approve_ralph", "begin",
+                  "ralph_start", "complete", "cancel", "fail"}
+        for status, permitted in allowed.items():
             source = ForgeState("x", self.cwd.resolve(), None, status, 1, "0.1.0")
-            with self.subTest(status=status, event=event), self.assertRaises(ValueError):
-                transition(source, event)
+            for event in events - permitted:
+                with self.subTest(status=status, event=event), self.assertRaises(ValueError):
+                    transition(source, event)
 
     def test_replace_is_atomic_and_rejects_mismatch(self):
         state = self.store.create("s", self.cwd, None)
@@ -78,6 +96,9 @@ class StateTests(unittest.TestCase):
         wrong_plugin = ForgeState("s", replacement.cwd, None, "frozen", 1, "9.9.9")
         with self.assertRaises(StateError):
             self.store.replace(wrong_plugin)
+        invalid_cwd = ForgeState("s", Path(self.tmp.name) / "missing", None, "frozen", 1, "0.1.0")
+        with self.assertRaises(StateError):
+            self.store.replace(invalid_cwd)
 
     def test_corrupt_invalid_utf8_and_symlink_fail_closed(self):
         self.assertIsNone(self.store.load("missing"))
@@ -95,6 +116,61 @@ class StateTests(unittest.TestCase):
         path.symlink_to(target)
         with self.assertRaises(StateError):
             self.store.load("s")
+
+    def test_root_symlink_is_rejected_by_load_and_delete(self):
+        self.store.create("s", self.cwd, None)
+        real_root = Path(self.tmp.name) / "real-state"
+        self.root.rename(real_root)
+        self.root.symlink_to(real_root, target_is_directory=True)
+        for operation in (self.store.load, self.store.delete):
+            with self.subTest(operation=operation.__name__), self.assertRaises(StateError):
+                operation("s")
+
+    def test_loaded_and_replaced_bindings_must_be_real_directories(self):
+        state = self.store.create("s", self.cwd, self.repo)
+        path = self.store.path_for("s")
+        payload = json.loads(path.read_text())
+        missing = self.cwd / "missing"
+        payload["cwd"] = str(missing)
+        path.write_text(json.dumps(payload))
+        with self.assertRaises(StateError):
+            self.store.load("s")
+
+        path.write_text(json.dumps({
+            "schema_version": 1,
+            "plugin_version": "0.1.0",
+            "session_id": "s",
+            "cwd": str(self.cwd),
+            "repo": {"root": str(missing), "head": "abc123", "git_dir": None},
+            "status": "shaping",
+        }))
+        with self.assertRaises(StateError):
+            self.store.load("s")
+
+        replacement = ForgeState("replace", self.cwd, RepoIdentity(missing), "shaping", 1, "0.1.0")
+        with self.assertRaises(StateError):
+            self.store.replace(replacement)
+
+    def test_trailing_content_beyond_read_cap_is_rejected(self):
+        state = self.store.create("s", self.cwd, None)
+        path = self.store.path_for("s")
+        payload = path.read_bytes()
+        path.write_bytes(payload + b" " * (_MAX_RECORD_BYTES - len(payload)) + b"\xff")
+        with self.assertRaises(StateError):
+            self.store.load("s")
+
+    def test_concurrent_creators_are_exclusive(self):
+        def create():
+            try:
+                self.store.create("same", self.cwd, None)
+                return "created"
+            except StateError:
+                return "rejected"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(lambda _: create(), range(8)))
+        self.assertEqual(results.count("created"), 1)
+        self.assertEqual(results.count("rejected"), 7)
 
     def test_canonical_cwd_and_repository_binding(self):
         link = Path(self.tmp.name) / "link"

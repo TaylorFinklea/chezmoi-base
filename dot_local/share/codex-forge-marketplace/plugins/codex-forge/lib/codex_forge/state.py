@@ -94,8 +94,29 @@ def _repo_for_create(cwd: Path, repo: Optional[RepoIdentity]) -> Optional[RepoId
         raise ValueError("cwd is outside repository root") from exc
     git_dir = None
     if repo.git_dir is not None:
-        git_dir = Path(repo.git_dir).resolve(strict=True)
+        git_dir = _canonical_directory(repo.git_dir, "git directory")
     return RepoIdentity(root, repo.head, git_dir)
+
+
+def _validate_bindings(cwd: Path, repo: Optional[RepoIdentity], error_type: type[Exception]) -> None:
+    try:
+        canonical_cwd = _canonical_directory(cwd, "cwd")
+        if Path(cwd) != canonical_cwd:
+            raise ValueError("cwd is not canonical")
+        if repo is not None:
+            root = _canonical_directory(repo.root, "repository root")
+            if Path(repo.root) != root:
+                raise ValueError("repository root is not canonical")
+            if repo.git_dir is not None:
+                git_dir = _canonical_directory(repo.git_dir, "git directory")
+                if Path(repo.git_dir) != git_dir:
+                    raise ValueError("git directory is not canonical")
+            try:
+                canonical_cwd.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("cwd is outside repository root") from exc
+    except (OSError, TypeError, ValueError) as exc:
+        raise error_type("invalid directory binding") from exc
 
 
 def _state_payload(state: ForgeState) -> dict[str, Any]:
@@ -151,6 +172,7 @@ def _state_from_payload(payload: Any) -> ForgeState:
             cwd.relative_to(repo.root)
         except ValueError as exc:
             raise StateError("cwd is outside repository root") from exc
+    _validate_bindings(cwd, repo, StateError)
     return ForgeState(payload["session_id"], cwd, repo, payload["status"],
                       payload["schema_version"], payload["plugin_version"])
 
@@ -162,13 +184,24 @@ class StateStore:
         if not isinstance(plugin_version, str) or not plugin_version:
             raise ValueError("plugin_version is required")
 
-    def _ensure_root(self) -> None:
-        if self.data_root.exists() or self.data_root.is_symlink():
-            if self.data_root.is_symlink() or not self.data_root.is_dir():
-                raise StateError("state root must be a directory")
-        else:
-            self.data_root.mkdir(parents=True, mode=0o700)
+    def _root_exists(self) -> bool:
+        try:
+            info = self.data_root.lstat()
+        except FileNotFoundError:
+            return False
+        if stat_is_symlink(info) or not stat_is_directory(info):
+            raise StateError("state root must be a non-symlink directory")
         os.chmod(self.data_root, 0o700)
+        return True
+
+    def _ensure_root(self) -> None:
+        if not self._root_exists():
+            try:
+                self.data_root.mkdir(parents=True, mode=0o700)
+            except FileExistsError:
+                pass
+            if not self._root_exists():
+                raise StateError("state root must be a non-symlink directory")
 
     def path_for(self, session_id: str) -> Path:
         _valid_session_id(session_id)
@@ -184,7 +217,7 @@ class StateStore:
 
     def load(self, session_id: str) -> Optional[ForgeState]:
         path = self.path_for(session_id)
-        if not self.data_root.exists():
+        if not self._root_exists():
             return None
         self._check_record(path)
         try:
@@ -198,9 +231,13 @@ class StateStore:
             if not stat_is_regular(os.fstat(fd)):
                 raise StateError("state record must be regular")
             try:
-                raw = os.read(fd, 10 * 1024 * 1024)
+                raw = os.read(fd, 10 * 1024 * 1024 + 1)
+                if len(raw) > 10 * 1024 * 1024 or os.read(fd, 1):
+                    raise StateError("state record is oversized")
                 text = raw.decode("utf-8")
                 payload = json.loads(text)
+            except StateError:
+                raise
             except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
                 raise StateError("corrupt state record") from exc
         finally:
@@ -217,11 +254,8 @@ class StateStore:
         canonical_cwd = _canonical_directory(cwd, "cwd")
         canonical_repo = _repo_for_create(canonical_cwd, repo)
         self._ensure_root()
-        path = self.path_for(session_id)
-        if path.exists() or path.is_symlink():
-            raise StateError("state already exists")
         state = ForgeState(session_id, canonical_cwd, canonical_repo, "shaping", SCHEMA_VERSION, self.plugin_version)
-        self.replace(state)
+        self._persist(state, exclusive=True)
         return state
 
     def replace(self, state: ForgeState) -> None:
@@ -230,9 +264,13 @@ class StateStore:
         _valid_session_id(state.session_id)
         if state.schema_version != SCHEMA_VERSION or state.plugin_version != self.plugin_version:
             raise StateError("state schema or plugin mismatch")
-        if state.status not in _STATUSES or not Path(state.cwd).is_absolute() or Path(state.cwd) != Path(state.cwd).resolve():
+        if state.status not in _STATUSES:
             raise StateError("invalid state identity")
+        _validate_bindings(Path(state.cwd), state.repo, StateError)
         self._ensure_root()
+        self._persist(state, exclusive=False)
+
+    def _persist(self, state: ForgeState, exclusive: bool) -> None:
         path = self.path_for(state.session_id)
         self._check_record(path)
         payload = json.dumps(_state_payload(state), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -248,7 +286,11 @@ class StateStore:
             finally:
                 os.close(fd)
             os.chmod(temp, 0o600)
-            os.replace(temp, path)
+            if exclusive:
+                os.link(temp, path, follow_symlinks=False)
+                os.unlink(temp)
+            else:
+                os.replace(temp, path)
             dir_fd = os.open(self.data_root, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
@@ -263,7 +305,7 @@ class StateStore:
 
     def delete(self, session_id: str) -> None:
         path = self.path_for(session_id)
-        if not self.data_root.exists():
+        if not self._root_exists():
             return
         self._check_record(path)
         try:
@@ -283,3 +325,7 @@ def stat_is_symlink(info: os.stat_result) -> bool:
 
 def stat_is_regular(info: os.stat_result) -> bool:
     return stat.S_ISREG(info.st_mode)
+
+
+def stat_is_directory(info: os.stat_result) -> bool:
+    return stat.S_ISDIR(info.st_mode)
