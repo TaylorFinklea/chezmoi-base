@@ -173,16 +173,36 @@ case "$subcommand" in
     printf '%s/dot_%s\n' "$source" "${2##*/}"
     ;;
   apply)
-    printf 'apply-args:%s:%s\n' "$source" "$*" >> "$CHEZMOI_CALL_LOG"
+    original_args="$*"
     parent_dirs=0
+    include_scripts=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --force) shift ;;
         --parent-dirs) parent_dirs=1; shift ;;
+        --include)
+          if [ "${2:-}" != scripts ]; then
+            printf 'unexpected apply include: %s\n' "${2:-}" >&2
+            exit 70
+          fi
+          include_scripts=1
+          shift 2
+          ;;
         --) shift; break ;;
         *) printf 'unexpected apply option: %s\n' "$1" >&2; exit 70 ;;
       esac
     done
+    if [ "$include_scripts" -eq 1 ]; then
+      if [ "$#" -ne 0 ]; then
+        printf 'script-only apply received targets\n' >&2
+        exit 70
+      fi
+      printf 'apply-scripts:%s:--include scripts\n' "$source" >> "$CHEZMOI_CALL_LOG"
+      mkdir -p "$destination"
+      : > "$destination/.script-applied-${source##*/}"
+      exit 0
+    fi
+    printf 'apply-args:%s:%s\n' "$source" "$original_args" >> "$CHEZMOI_CALL_LOG"
     for target in "$@"; do
       parent=${target%/*}
       if [ ! -d "$parent" ] && [ "$parent_dirs" -ne 1 ]; then
@@ -387,6 +407,33 @@ if ! grep -Fqx "apply-args:$tmp/personal:--force --parent-dirs -- $tmp/destinati
   fail 'whitespace-only MM drift should force-apply with managed parents'
 fi
 rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
+
+# run-on-change scripts apply in isolation; unrelated source drift stays untouched
+script_target='.chezmoiscripts/install-codex-forge.sh'
+unrelated_target='unrelated/missing-file'
+printf ' R %s\nM  %s\n' "$script_target" "$unrelated_target" > "$tmp/personal/fake-status.txt"
+rm -rf "$tmp/destination"
+: > "$call_log"
+if ! run_compose sync personal --no-pull --non-interactive > "$tmp/script-sync.out" 2>&1; then
+  cat "$tmp/script-sync.out" >&2
+  fail 'sync should apply pending scripts without entering the decision queue'
+fi
+if [ "$(grep -Fc "apply-scripts:$tmp/personal:--include scripts" "$call_log")" -ne 1 ]; then
+  fail 'sync should invoke script-only apply exactly once for the source'
+fi
+if grep -Fq "$script_target" "$tmp/script-sync.out"; then
+  fail 'script pseudo-target should not enter the decision queue'
+fi
+if grep -F "apply-scripts:" "$call_log" | grep -Fq -- '--force'; then
+  fail 'script-only apply must not use --force'
+fi
+if [ ! -f "$tmp/destination/.script-applied-personal" ]; then
+  fail 'script-only apply should create the fake execution marker'
+fi
+if [ -e "$tmp/destination/$unrelated_target" ]; then
+  fail 'script-only apply should not materialize unrelated file drift'
+fi
+rm "$tmp/personal/fake-status.txt"
 
 # --- decisions in non-interactive mode ---
 printf 'MM fresh/decision/.tmux.conf\n' > "$tmp/personal/fake-status.txt"

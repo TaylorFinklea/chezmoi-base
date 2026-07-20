@@ -17,7 +17,7 @@
 - No repository mutation before nonce approval.
 - Unknown local tools fail closed during shaping and frozen states.
 - Python helper uses only the standard library; no runtime package installation.
-- Ralph requires clean Git, empty Plan, at least two exact-Verify non-Lead phases, and launches `ralph -n 0 -t codex`; never pass `-L`.
+- Ralph requires clean Git, empty Plan, at least two exact-Verify non-Lead phases, runs `ralph -n 0 -t codex` preflight, then launches `ralph -t codex`; never pass `-L` to either invocation.
 - Pre-spawn rollback restores only Forge-owned planning files; never rewind commits after spawn.
 - Preserve unrelated Codex runtime configuration and existing Atuin/Neovim drift.
 - Hook trust stays a native, explicit Codex user action.
@@ -296,16 +296,19 @@ git commit -m "feat(codex-forge): enforce shaping with lifecycle hooks"
 
 - [ ] **Step 1: Write failing CLI tests**
 
-Test JSON stdin/stdout for:
+Test bounded JSON stdout and structured base64url JSON input for:
 
 ```text
 begin -- creates shaping state only with a current heartbeat;
-question -- increments before returning and rejects attempt 6;
-freeze -- validates brief, stores digest, creates 256-bit nonce, expires in 30 minutes;
+question <base64url-json> -- increments before returning and rejects attempt 6;
+freeze <base64url-json> -- validates brief, stores digest, creates 256-bit nonce, expires in 30 minutes;
 status -- returns bounded state without full logs;
 complete -- rejects non-terminal verification;
-fail -- records a bounded failure reason.
+fail <base64url-json> -- records a bounded failure reason.
 ```
+
+Structured arguments are unpadded base64url using only `[A-Za-z0-9_-]`, have a
+fixed encoded-size cap, decode as UTF-8, and contain exactly one JSON value.
 
 Reject model-supplied session/data arguments, missing injected environment, changed cwd/repository, duplicate begin, and malformed JSON.
 
@@ -325,7 +328,13 @@ Expected: missing CLI and skill failures.
 
 - [ ] **Step 4: Implement the CLI**
 
-The executable resolves `../lib`, imports `codex_forge.cli`, and never evaluates user text as shell. `freeze` reads the complete brief from stdin. Output one bounded JSON response. Error responses use a stable `{ok:false, code, message}` shape and non-zero exit.
+The executable resolves `../lib`, imports `codex_forge.cli`, and never
+evaluates user text as shell. `question`, `freeze`, and `fail` accept exactly
+one size-bounded, unpadded base64url JSON argument; `freeze` decodes and
+validates the complete brief. The hook's canonical helper grammar validates the
+same alphabet/count before environment injection. Output one bounded JSON
+response. Error responses use a stable `{ok:false, code, message}` shape and
+non-zero exit.
 
 - [ ] **Step 5: Write the skill**
 
@@ -450,13 +459,15 @@ Parse `.docs/ai/current-state.md` structurally, require an empty Plan, render ex
 
 - [ ] **Step 6: Implement launch and rollback boundary**
 
-Use subprocess argument arrays for:
+Use subprocess argument arrays for real preflight and launch:
 
 ```text
 ralph -n 0 -t codex
+ralph -t codex
 ```
 
-Create one planning commit before spawn. On pre-spawn failure, restore exact snapshots and remove only that planning commit when HEAD still matches. After successful spawn, record PID/process group and never reset Git.
+The zero-iteration preflight occurs before planning writes. Create one planning
+commit before the actual launch spawn. On pre-spawn failure, restore exact snapshots and remove only that planning commit when HEAD still matches. After successful spawn, record PID/process group and never reset Git.
 
 - [ ] **Step 7: Implement status and cancellation**
 

@@ -1,0 +1,20 @@
+{
+  "name": "local-managed",
+  "interface": {
+    "displayName": "Local Managed"
+  },
+  "plugins": [
+    {
+      "name": "codex-forge",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-forge"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

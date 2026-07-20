@@ -1,0 +1,1 @@
+{"session_id":"fixture-session","cwd":"/tmp","hook_event_name":"PreToolUse","model":"gpt-5-codex","tool_name":"Bash","tool_input":{"command":"git status --short"}}

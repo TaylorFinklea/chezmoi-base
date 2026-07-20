@@ -103,7 +103,11 @@ policy applies to their local tool calls as well.
 
 The helper uses only the Python standard library and accepts explicit
 subcommands. Hook-mediated calls receive the session ID from hook input rather
-than trusting a model-provided identifier.
+than trusting a model-provided identifier. Structured model input crosses the
+Bash hook boundary as one size-bounded, unpadded base64url JSON argument; the
+hook validates its alphabet and command grammar before injection, and the CLI
+decodes then validates the complete JSON value. Pipes, heredocs, redirects,
+and interactive `write_stdin` transport remain forbidden.
 
 State lives in the plugin's writable data directory, not the repository. Each
 record is bound to:
@@ -211,9 +215,10 @@ sandbox or Git review.
 - every phase has an exact Verify command;
 - the installed `ralph` supports the required Codex backend.
 
-After approval, the helper may write the Forge-owned planning files, create one
-planning commit, and launch real `ralph -n 0 -t codex`. It must never pass
-`-L`.
+After approval, the helper runs real `ralph -n 0 -t codex` as a zero-iteration
+preflight. Only after that passes may it write the Forge-owned planning files,
+create one planning commit, and launch real `ralph -t codex`. Neither invocation
+may pass `-L`.
 
 Before child spawn, failures restore byte-exact snapshots of only Forge-owned
 planning files and remove only the helper's own planning commit when safe.
