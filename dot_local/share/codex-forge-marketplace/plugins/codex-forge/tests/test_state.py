@@ -102,6 +102,26 @@ class StateTests(unittest.TestCase):
         with self.assertRaises(StateError):
             self.store.replace(invalid_cwd)
 
+    def test_malformed_persisted_session_id_and_status_fail_with_state_error(self):
+        self.store.create("s", self.cwd, None)
+        path = self.store.path_for("s")
+        payload = json.loads(path.read_text())
+
+        for session_id in ([], {}):
+            with self.subTest(field="session_id", value=session_id):
+                payload["session_id"] = session_id
+                path.write_text(json.dumps(payload))
+                with self.assertRaises(StateError):
+                    self.store.load("s")
+
+        for status in ([], {}):
+            with self.subTest(field="status", value=status):
+                payload["session_id"] = "s"
+                payload["status"] = status
+                path.write_text(json.dumps(payload))
+                with self.assertRaises(StateError):
+                    self.store.load("s")
+
     def test_corrupt_invalid_utf8_and_symlink_fail_closed(self):
         self.assertIsNone(self.store.load("missing"))
         state = self.store.create("s", self.cwd, None)

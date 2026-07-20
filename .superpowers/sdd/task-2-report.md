@@ -102,3 +102,16 @@ Added focused tests for static hostile ancestors, persisted field types, and ato
 - Scope remains Task 2 state implementation/tests plus this report; no Task 3+ files, HOME, pushes, or malicious concurrent-race hardening were added.
 - Existing platform alias paths are avoided in tests by canonicalizing temporary test roots; production validation remains strict for every lexical ancestor.
 - No blockers or residual in-scope concerns identified.
+
+### Stable malformed-record errors
+
+#### RED evidence
+
+- Added `test_malformed_persisted_session_id_and_status_fail_with_state_error` before implementation.
+- `python3 -m unittest discover -s dot_local/share/codex-forge-marketplace/plugins/codex-forge/tests -p 'test*.py'` — failed: 23 tests, 4 errors. Malformed persisted `session_id` list/object leaked `ValueError`; malformed persisted `status` list/object leaked `TypeError` (`unhashable type`).
+
+#### GREEN evidence
+
+- Normalized malformed persisted `session_id` validation to `StateError` and type-checked persisted `status` before set membership.
+- `python3 -m unittest discover -s dot_local/share/codex-forge-marketplace/plugins/codex-forge/tests -p 'test*.py'` — passed; 23 tests, all OK.
+- `git diff --check` — passed.

@@ -169,13 +169,16 @@ def _state_from_payload(payload: Any) -> ForgeState:
         raise StateError("unsupported state schema")
     if not isinstance(payload["plugin_version"], str) or not payload["plugin_version"]:
         raise StateError("invalid plugin version")
-    _valid_session_id(payload["session_id"])
+    try:
+        _valid_session_id(payload["session_id"])
+    except (TypeError, ValueError) as exc:
+        raise StateError("invalid session identifier") from exc
     if not isinstance(payload["cwd"], str) or not Path(payload["cwd"]).is_absolute():
         raise StateError("invalid canonical cwd")
     cwd = Path(payload["cwd"])
     if not cwd.is_absolute() or cwd != cwd.resolve():
         raise StateError("cwd is not canonical")
-    if payload["status"] not in _STATUSES:
+    if not isinstance(payload["status"], str) or payload["status"] not in _STATUSES:
         raise StateError("invalid lifecycle status")
     raw_repo = payload["repo"]
     repo = None
