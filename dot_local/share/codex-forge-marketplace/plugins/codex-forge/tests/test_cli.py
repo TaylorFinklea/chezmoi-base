@@ -193,7 +193,7 @@ class CLITests(unittest.TestCase):
 
         preparation = SimpleNamespace(planning_commit="planning-commit")
         marker_digest = "a" * 64
-        def launch(prepared, *, data_root, launch_id, on_spawn):
+        def launch(prepared, *, data_root, launch_id, on_spawn, on_abort):
             self.assertIs(prepared, preparation)
             on_spawn(SimpleNamespace(identity=SimpleNamespace(pid=123, pgid=123, start="started", marker_digest=base64.urlsafe_b64encode(bytes.fromhex(marker_digest)).decode("ascii")), launch_id=launch_id))
             return SimpleNamespace(launch_id=launch_id)
@@ -217,6 +217,9 @@ class CLITests(unittest.TestCase):
         self.assertTrue(observed["owned"])
         self.assertNotIn("marker_digest", observed)
 
+        (self.data / f"heartbeat-{digest_name}.json").write_text(json.dumps({
+            "plugin_version": "0.1.0", "session_id": self.session, "cwd": str(self.cwd), "timestamp": 0,
+        }))
         with mock.patch.object(cli_module, "read_ralph_receipt", return_value=None), \
              mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": True}), \
              mock.patch.object(cli_module, "cancel_owned_ralph", return_value={"cancelled": True, "owned": True, "running": False}):
@@ -224,6 +227,57 @@ class CLITests(unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertEqual(store.load(self.session).status, "cancelled")
         self.assertTrue((self.data / f"ralph-{digest_name}.json").exists())
+
+    def test_ralph_launch_callback_partial_persistence_restores_exact_state_and_record(self):
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        state = transition(transition(store.load(self.session), "freeze"), "approve_ralph")
+        store.replace(state)
+        ralph_brief = {**BRIEF, "dispatcher": "ralph", "phases": [
+            {"name": "implement", "tier_floor": "senior", "verify": "python3 -m unittest"},
+            {"name": "document", "tier_floor": "junior", "verify": "python3 -m py_compile"},
+        ]}
+        digest_name = hashlib.sha256(self.session.encode()).hexdigest()
+        (self.data / f"brief-{digest_name}.json").write_text(json.dumps({"digest": "ralph-digest", "brief": ralph_brief}))
+        preparation = SimpleNamespace(planning_commit="planning-commit")
+        marker = base64.urlsafe_b64encode(bytes.fromhex("a" * 64)).decode("ascii")
+        original_replace = StateStore.replace
+
+        def fail_running_replace(instance, next_state):
+            if next_state.status == "ralph_running":
+                raise StateError("injected callback persistence failure")
+            return original_replace(instance, next_state)
+
+        def launch(_prepared, *, data_root, launch_id, on_spawn, on_abort):
+            try:
+                on_spawn(SimpleNamespace(identity=SimpleNamespace(
+                    pid=123, pgid=123, start="started", marker_digest=marker), launch_id=launch_id))
+            except Exception:
+                on_abort()
+                raise
+            self.fail("callback should fail before arming")
+
+        with mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
+             mock.patch.object(cli_module, "launch_ralph_dispatch", side_effect=launch), \
+             mock.patch.object(StateStore, "replace", fail_running_replace):
+            with self.assertRaises(cli_module.CLIError) as failure:
+                self.invoke_cli("ralph-launch")
+        self.assertEqual(failure.exception.code, "state_write_failed")
+        self.assertEqual(store.load(self.session), state)
+        self.assertFalse((self.data / f"ralph-{digest_name}.json").exists())
+
+    def test_status_reconciles_ralph_once_and_uses_that_same_snapshot(self):
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        state = transition(transition(transition(store.load(self.session), "freeze"), "approve_ralph"), "ralph_start")
+        store.replace(state)
+        terminal = transition(state, "complete")
+        public = {"owned": True, "running": False, "terminal": "completed", "exit_code": 0}
+        with mock.patch.object(cli_module, "_reconcile_ralph", return_value=(terminal, public, None)) as reconcile:
+            body = self.invoke_cli("status")
+        self.assertEqual(reconcile.call_count, 1)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["ralph"], public)
 
     def test_ralph_status_receipt_transitions_completed_or_failed(self):
         self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")

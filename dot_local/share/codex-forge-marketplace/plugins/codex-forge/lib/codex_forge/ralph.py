@@ -28,10 +28,22 @@ KILL_GRACE_SECONDS = 2.0
 FORGE_PATHS = (".docs/ai/current-state.md", ".docs/ai/roadmap.md")
 OWNERSHIP_MARKER_ENV = "CODEX_FORGE_RALPH_OWNERSHIP_MARKER"
 _MARKER_DIGEST_BYTES = 32
+_GATE_PENDING = b"waiting\n"
+_GATE_ARMED = b"armed\n"
 
 
 class RalphError(RuntimeError):
     pass
+
+
+class RalphLaunchRecoveryError(RalphError):
+    """A pre-arm launch could not prove its private state was restored."""
+
+
+class _GateArmError(RalphError):
+    def __init__(self, message: str, *, may_have_armed: bool):
+        super().__init__(message)
+        self.may_have_armed = may_have_armed
 
 
 @dataclass(frozen=True)
@@ -557,6 +569,11 @@ def _private_names(launch_id: str) -> tuple[str, str, str]:
             f"ralph-receipt-{launch_id}.json")
 
 
+def _gate_name(launch_id: str) -> str:
+    _private_names(launch_id)
+    return f"ralph-gate-{launch_id}.gate"
+
+
 def _private_root(root: Path) -> Path:
     candidate = Path(root)
     try:
@@ -573,14 +590,72 @@ def _private_root(root: Path) -> Path:
     return root
 
 
-def _create_private_file(root: Path, name: str) -> None:
+def _create_private_file(root: Path, name: str, content: bytes = b"") -> None:
     path = root / name
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
         raise RalphError("Ralph private output file could not be created") from exc
     try:
+        view = memoryview(content)
+        while view:
+            view = view[os.write(fd, view):]
         os.fsync(fd)
+    except OSError as exc:
+        raise RalphError("Ralph private output file could not be created") from exc
+    finally:
+        os.close(fd)
+
+
+def _private_regular(path: Path) -> os.stat_result:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise RalphError("Ralph private output file is unavailable") from exc
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or
+            stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+        raise RalphError("Ralph private output file is unavailable")
+    return info
+
+
+def _arm_gate(root: Path, launch_id: str) -> None:
+    """Durably arm the one-use gate, distinguishing an unsafe post-write error."""
+    path = root / _gate_name(launch_id)
+    try:
+        expected = _private_regular(path)
+        fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except RalphError as exc:
+        raise _GateArmError("Ralph supervisor gate is unavailable", may_have_armed=False) from exc
+    except OSError as exc:
+        raise _GateArmError("Ralph supervisor gate is unavailable", may_have_armed=False) from exc
+    may_have_armed = False
+    try:
+        observed = os.fstat(fd)
+        if (not stat.S_ISREG(observed.st_mode) or observed.st_ino != expected.st_ino or
+                observed.st_dev != expected.st_dev):
+            raise _GateArmError("Ralph supervisor gate changed", may_have_armed=False)
+        os.lseek(fd, 0, os.SEEK_SET)
+        current = os.read(fd, max(len(_GATE_PENDING), len(_GATE_ARMED)) + 1)
+        if os.read(fd, 1) or current == _GATE_ARMED:
+            raise _GateArmError("Ralph supervisor gate was already armed", may_have_armed=True)
+        if current != _GATE_PENDING:
+            raise _GateArmError("Ralph supervisor gate is invalid", may_have_armed=False)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        view = memoryview(_GATE_ARMED)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("could not arm Ralph supervisor gate")
+            view = view[written:]
+            if not view:
+                may_have_armed = True
+        os.fsync(fd)
+    except _GateArmError:
+        raise
+    except OSError as exc:
+        raise _GateArmError("Ralph supervisor gate could not be armed",
+                            may_have_armed=may_have_armed) from exc
     finally:
         os.close(fd)
 
@@ -588,6 +663,11 @@ def _create_private_file(root: Path, name: str) -> None:
 def _read_private_json(root: Path, name: str) -> dict[str, Any] | None:
     try:
         root = _private_root(root)
+        info = _private_regular(root / name)
+        # A pre-created zero-byte receipt means the validated supervisor has
+        # not published either running or terminal state yet.
+        if info.st_size == 0:
+            return None
         return SecureJSONRecordStore(root, max_bytes=8192).read(name)
     except (StateError, OSError) as exc:
         raise RalphError("Ralph terminal receipt is malformed or inaccessible") from exc
@@ -642,16 +722,16 @@ def read_ralph_output(data_root: Path, launch_id: str, stream: str, *, limit: in
 
 
 def _spawn_backend(cwd: Path, marker: str, data_root: Path, launch_id: str) -> subprocess.Popen[bytes]:
-    """Start a detached supervisor that owns Ralph's process group and pipes."""
+    """Start an unarmed detached supervisor that owns Ralph's process group."""
     stdout_name, stderr_name, receipt_name = _private_names(launch_id)
     environment = dict(os.environ)
     environment[OWNERSHIP_MARKER_ENV] = marker
     runner = Path(__file__).with_name("ralph_runner.py")
     return subprocess.Popen([sys.executable, str(runner), "--data-root", str(data_root),
                              "--stdout-name", stdout_name, "--stderr-name", stderr_name,
-                             "--receipt-name", receipt_name], cwd=cwd, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            start_new_session=True, env=environment)
+                             "--receipt-name", receipt_name, "--gate-name", _gate_name(launch_id)],
+                            cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True, env=environment)
 
 
 def _group_exists(pgid: int) -> bool:
@@ -728,44 +808,66 @@ def _terminate_owned_group(expected: ProcessIdentity, child: subprocess.Popen[by
         _terminate_child(child, grace_seconds=grace_seconds)
 
 
-def _await_runner_ready(launch: RalphLaunch, data_root: Path, child: subprocess.Popen[bytes]) -> None:
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        receipt = _receipt(launch, data_root)
-        if receipt is not None:
-            if receipt["status"] == "running":
-                return
-            # The state record remains recoverable; its terminal receipt will
-            # make status deterministically fail rather than strand a launch.
-            return
-        if child.poll() is not None:
-            return
-        time.sleep(0.02)
+def _abort_unarmed_supervisor(preparation: RalphPreparation, child: subprocess.Popen[bytes],
+                              identity: ProcessIdentity | None,
+                              on_abort: Callable[[], None] | None) -> None:
+    """Reap an unarmed supervisor, restore caller state, then undo only our plan."""
+    if identity is None:
+        _terminate_child(child, grace_seconds=KILL_GRACE_SECONDS)
+    else:
+        _terminate_owned_group(identity, child, grace_seconds=KILL_GRACE_SECONDS)
+    try:
+        if on_abort is not None:
+            on_abort()
+    except Exception as exc:
+        raise RalphLaunchRecoveryError(
+            "Ralph launch state restoration is uncertain; recovery is required") from exc
+    try:
+        _rollback(preparation)
+    except Exception as exc:
+        raise RalphLaunchRecoveryError(
+            "Ralph planning rollback is uncertain; recovery is required") from exc
 
 
 def launch_ralph_dispatch(preparation: RalphPreparation, *, data_root: Path,
-                          launch_id: str, on_spawn: Callable[[RalphLaunch], None] | None = None) -> RalphLaunch:
-    """Return after an owned detached Ralph supervisor has been validated.
+                          launch_id: str, on_spawn: Callable[[RalphLaunch], None] | None = None,
+                          on_abort: Callable[[], None] | None = None) -> RalphLaunch:
+    """Persist ownership before arming a detached supervisor to start real Ralph.
 
-    The caller never waits for Ralph.  The supervisor drains output and writes
-    the terminal receipt, so later status/cancel operations retain the same
-    group-identity checks after this CLI process has exited.
+    Private files, gate validation, and supervisor startup are rollback-safe
+    until the one-use gate is armed. The arm write is the non-rewind boundary:
+    it is the first point at which the supervisor may execute real Ralph.
     """
-    root = _private_root(data_root)
-    stdout_name, stderr_name, receipt_name = _private_names(launch_id)
-    for name in (stdout_name, stderr_name):
-        _create_private_file(root, name)
-    marker = secrets.token_urlsafe(_MARKER_DIGEST_BYTES)
-    marker_digest = _marker_digest(marker)
+    child: subprocess.Popen[bytes] | None = None
+    identity: ProcessIdentity | None = None
+    root: Path | None = None
     try:
+        root = _private_root(data_root)
+        stdout_name, stderr_name, receipt_name = _private_names(launch_id)
+        gate_name = _gate_name(launch_id)
+        # Receipt and gate are created and checked before Popen, so all private
+        # filesystem faults share the preparation rollback transaction.
+        for name, content in ((stdout_name, b""), (stderr_name, b""),
+                              (receipt_name, b""), (gate_name, _GATE_PENDING)):
+            _create_private_file(root, name, content)
+            _private_regular(root / name)
+        marker = secrets.token_urlsafe(_MARKER_DIGEST_BYTES)
+        marker_digest = _marker_digest(marker)
         child = _spawn_backend(preparation.cwd, marker, root, launch_id)
-    except OSError as exc:
-        _rollback(preparation)
-        raise RalphError("Ralph launch failed before spawn") from exc
-    # The Popen boundary is durable: no Git rollback after this point.
+    except Exception as exc:
+        if child is None:
+            _rollback(preparation)
+            if isinstance(exc, RalphError):
+                raise
+            raise RalphError("Ralph launch failed before spawn") from exc
+        # Popen succeeded but the supervisor is still unarmed; it cannot have
+        # started Ralph, so terminate/reap it before reverting the plan.
+        _abort_unarmed_supervisor(preparation, child, identity, on_abort)
+        raise RalphError("Ralph launch failed before arming") from exc
+
     identity = _identity(child.pid, marker_digest)
     if identity is None:
-        _terminate_child(child, grace_seconds=KILL_GRACE_SECONDS)
+        _abort_unarmed_supervisor(preparation, child, None, on_abort)
         raise RalphError("Ralph process identity could not be established")
     launch = RalphLaunch(ProcessIdentity(identity.pid, identity.start, identity.pgid,
                                          encode_marker_digest(identity.marker_digest)),
@@ -773,15 +875,25 @@ def launch_ralph_dispatch(preparation: RalphPreparation, *, data_root: Path,
     try:
         if on_spawn:
             on_spawn(launch)
-        _await_runner_ready(launch, root, child)
-        # Reap the detached supervisor in a live CLI process without making
-        # launch synchronous. If the CLI exits first, normal parent-death
-        # reparenting applies; if it remains alive, this avoids zombie children.
-        threading.Thread(target=child.wait, daemon=True).start()
-        return launch
     except Exception:
-        _terminate_owned_group(identity, child, grace_seconds=KILL_GRACE_SECONDS)
+        _abort_unarmed_supervisor(preparation, child, identity, on_abort)
         raise
+    try:
+        _arm_gate(root, launch_id)
+    except _GateArmError as exc:
+        if exc.may_have_armed:
+            # The runner may already have consumed the arm byte. Its persisted
+            # ownership record remains the only safe recovery route, so never
+            # rewind Git or restore lifecycle state here.
+            threading.Thread(target=child.wait, daemon=True).start()
+            raise RalphLaunchRecoveryError(
+                "Ralph gate arm is uncertain; persisted launch recovery is required") from exc
+        _abort_unarmed_supervisor(preparation, child, identity, on_abort)
+        raise RalphError("Ralph supervisor gate could not be armed") from exc
+    # Reap the detached supervisor in a live CLI process without making launch
+    # synchronous. Status/cancel retain identity checks after this CLI exits.
+    threading.Thread(target=child.wait, daemon=True).start()
+    return launch
 
 
 def recover_ralph_status(record: Mapping[str, Any] | None, *,

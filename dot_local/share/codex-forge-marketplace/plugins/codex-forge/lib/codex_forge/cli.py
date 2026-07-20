@@ -27,6 +27,7 @@ from .state import RepoIdentity, SecureJSONRecordStore, StateError, StateStore, 
 from .verification import missing_verification_commands, verification_complete
 from .ralph import (
     RalphError,
+    RalphLaunchRecoveryError,
     cancel_owned_ralph,
     inspect_ralph_eligibility,
     launch_ralph_dispatch,
@@ -238,7 +239,7 @@ def _approval_summary(root: Path, session: str, state: ForgeState) -> dict[str, 
     return {"state": state_name, "expires_in_seconds": remaining}
 
 
-def _summary(state: ForgeState, root: Path, session: str) -> dict[str, Any]:
+def _summary(state: ForgeState, root: Path, session: str, *, ralph: dict[str, Any] | None = None) -> dict[str, Any]:
     meta = _metadata(root, session)
     brief = _read_record(root, "brief-", session)
     required = len(state.verification_commands)
@@ -252,7 +253,9 @@ def _summary(state: ForgeState, root: Path, session: str) -> dict[str, Any]:
         "selected_dispatcher": _selected_dispatcher(state),
         "approval": _approval_summary(root, session, state),
         "verification": {"passed": passed, "required": required, "remaining": max(0, required - passed)},
-        "ralph": _ralph_status_for_state(state, root, session),
+        "ralph": ralph if ralph is not None else {
+            "owned": False, "running": False, "terminal": "not-started"
+        },
     }
 
 
@@ -381,9 +384,12 @@ def freeze(argument: str) -> dict[str, Any]:
 def status() -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session, heartbeat=False)
-    if state.status == "ralph_running":
-        state, _, _ = _reconcile_ralph(state, root, session, cwd, repo)
-    return _summary(state, root, session)
+    ralph = {"owned": False, "running": False, "terminal": "not-started"}
+    if state.status in {"approved_ralph", "ralph_running", "completed", "failed", "cancelled"}:
+        state, ralph, _ = _reconcile_ralph(state, root, session, cwd, repo)
+    # Reconcile exactly once: the same lifecycle snapshot supplies both status
+    # and Ralph fields, even if a receipt arrives while this command runs.
+    return _summary(state, root, session, ralph=ralph)
 
 
 def _ralph_brief(root: Path, session: str):
@@ -416,11 +422,35 @@ def ralph_preflight() -> dict[str, Any]:
     return {"ok": result.eligible, "eligible": result.eligible, "reasons": list(result.reasons)}
 
 
+def _restore_ralph_launch_snapshot(root: Path, session: str, state: ForgeState,
+                                   record: dict[str, Any] | None) -> None:
+    """Restore and prove the exact pre-handshake records before Git rewinds."""
+    failure: Exception | None = None
+    try:
+        if record is None:
+            _delete_record(root, "ralph-", session)
+        else:
+            _write_record(root, "ralph-", session, record)
+        _store(root).replace(state)
+    except Exception as exc:
+        failure = exc
+    try:
+        observed_state = _store(root).load(session)
+        observed_record = _read_record(root, "ralph-", session)
+    except Exception as exc:
+        raise CLIError("ralph_launch_recovery_required",
+                       "Ralph launch recovery state could not be verified") from exc
+    if observed_state != state or observed_record != record:
+        raise CLIError("ralph_launch_recovery_required",
+                       "Ralph launch state restoration is uncertain") from failure
+
+
 def ralph_launch() -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session)
     _ralph_state(state, "approved_ralph")
     brief = _ralph_brief(root, session)
+    original_ralph_record = _read_record(root, "ralph-", session)
     try:
         preparation = prepare_ralph_dispatch(brief, cwd)
     except (RalphError, OSError) as exc:
@@ -447,8 +477,14 @@ def ralph_launch() -> dict[str, Any]:
         except (StateError, ValueError, OSError) as exc:
             raise CLIError("state_write_failed", "Ralph start could not be persisted") from exc
 
+    def on_abort() -> None:
+        _restore_ralph_launch_snapshot(root, session, state, original_ralph_record)
+
     try:
-        launch_ralph_dispatch(preparation, data_root=root, launch_id=launch_id, on_spawn=on_spawn)
+        launch_ralph_dispatch(preparation, data_root=root, launch_id=launch_id,
+                              on_spawn=on_spawn, on_abort=on_abort)
+    except RalphLaunchRecoveryError as exc:
+        raise CLIError("ralph_launch_recovery_required", str(exc)) from exc
     except CLIError:
         raise
     except (RalphError, OSError) as exc:
@@ -543,7 +579,9 @@ def ralph_status() -> dict[str, Any]:
 
 def ralph_cancel() -> dict[str, Any]:
     session, root = _env()
-    state, cwd, repo = _load_bound(root, session)
+    # Long-running owned Ralph remains cancellable after the five-minute hook
+    # heartbeat expires, but still requires the identical session/cwd/repo bind.
+    state, cwd, repo = _load_bound(root, session, heartbeat=False)
     _ralph_state(state, "ralph_running")
     state, public, record = _reconcile_ralph(state, root, session, cwd, repo)
     if state.status != "ralph_running":

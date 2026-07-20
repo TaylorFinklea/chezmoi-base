@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from codex_forge import ralph as ralph_module
+from codex_forge import ralph_runner
 from codex_forge.brief import Brief, DecisionEnvelope, Phase
 from codex_forge.ralph import (
     ProcessIdentity,
@@ -97,9 +98,9 @@ class RalphTests(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env(), clear=False):
             return prepare_ralph_dispatch(BRIEF, self.repo, date="2026-07-20")
 
-    def launch(self, preparation, *, on_spawn=None):
+    def launch(self, preparation, *, on_spawn=None, on_abort=None):
         return launch_ralph_dispatch(preparation, data_root=self.root / "ralph-data",
-                                     launch_id="b" * 64, on_spawn=on_spawn)
+                                     launch_id="b" * 64, on_spawn=on_spawn, on_abort=on_abort)
 
     def wait_receipt(self, launch, timeout=5):
         deadline = time.monotonic() + timeout
@@ -308,7 +309,7 @@ class RalphTests(unittest.TestCase):
             os.kill(launch.identity.pid, 0)
         self.assertNotEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
 
-    def test_post_spawn_callback_failure_keeps_plan_and_reaps_owned_group(self):
+    def test_pre_arm_callback_failure_rolls_back_plan_and_reaps_unarmed_supervisor(self):
         self.ralph.write_text("#!/bin/sh\n[ \"${1:-}\" = \"-n\" ] && exit 0\nsleep 30\n")
         self.ralph.chmod(0o755)
         spawned = []
@@ -320,7 +321,8 @@ class RalphTests(unittest.TestCase):
             preparation = self.prepare()
             with self.assertRaisesRegex(RuntimeError, "state persistence failed"):
                 self.launch(preparation, on_spawn=fail_after_spawn)
-        self.assertNotEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+        self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+        self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
         self.assertEqual(len(spawned), 1)
         with self.assertRaises(ProcessLookupError):
             os.kill(spawned[0], 0)
@@ -398,6 +400,152 @@ class RalphTests(unittest.TestCase):
         self.assertEqual(kwargs["env"][ralph_module.OWNERSHIP_MARKER_ENV], marker)
         self.assertNotIn(marker, args[0])
         self.assertNotEqual(ralph_module._marker_digest(marker), marker)
+
+    def test_streaming_redaction_handles_every_8192_boundary_adjacent_and_eof_tail(self):
+        token = b"token-boundary-123"
+        digest = hashlib.sha256(token).hexdigest().encode("ascii")
+        for secret in (token, digest):
+            for split in range(len(secret) + 1):
+                with self.subTest(secret_length=len(secret), split=split):
+                    path = self.root / f"stream-{len(secret)}-{split}.log"
+                    path.write_bytes(b"")
+                    path.chmod(0o600)
+                    fd = os.open(path, os.O_WRONLY)
+                    sink = ralph_runner._TailFile(fd, (token, digest))
+                    prefix = b"ordinary-start:" + b"x" * (8192 - len(b"ordinary-start:") - split)
+                    sink.append(prefix + secret[:split])
+                    sink.append(secret[split:] + b"|" + token + digest + token + b"|ordinary-end\n")
+                    sink.close()
+                    output = path.read_bytes()
+                    self.assertIn(b"ordinary-start:", output)
+                    self.assertIn(b"ordinary-end\n", output)
+                    self.assertNotIn(token, output)
+                    self.assertNotIn(digest, output)
+                    self.assertIn(b"[REDACTED]", output)
+        eof = self.root / "stream-eof.log"
+        eof.write_bytes(b"")
+        eof.chmod(0o600)
+        fd = os.open(eof, os.O_WRONLY)
+        sink = ralph_runner._TailFile(fd, (token, digest))
+        sink.append(b"ordinary-eof:" + token + digest)
+        sink.close()
+        self.assertNotIn(token, eof.read_bytes())
+        self.assertNotIn(digest, eof.read_bytes())
+
+    def test_supervisor_waits_for_persistence_gate_before_spawning_real_ralph(self):
+        started = self.root / "ralph-started"
+        self.ralph.write_text(
+            "#!/bin/sh\n[ \"${1:-}\" = \"-n\" ] && exit 0\ntouch \"$RALPH_STARTED\"\n"
+        )
+        self.ralph.chmod(0o755)
+        def persisted(_launch):
+            self.assertFalse(started.exists())
+        with mock.patch.dict(os.environ, self.env(RALPH_STARTED=str(started)), clear=False):
+            launch = self.launch(self.prepare(), on_spawn=persisted)
+            self.assertEqual(self.wait_receipt(launch)["exit_code"], 0)
+        self.assertTrue(started.exists())
+
+    def test_private_pre_popen_failures_roll_back_plan_before_supervisor_starts(self):
+        for failure in ("root", 1, 2, 3, 4):
+            with self.subTest(failure=failure):
+                preparation = self.prepare()
+                if failure == "root":
+                    patcher = mock.patch.object(ralph_module, "_private_root", side_effect=RalphError("injected root"))
+                else:
+                    original_create = ralph_module._create_private_file
+                    calls = 0
+                    def fail_create(*args, **kwargs):
+                        nonlocal calls
+                        calls += 1
+                        if calls == failure:
+                            raise RalphError("injected private file")
+                        return original_create(*args, **kwargs)
+                    patcher = mock.patch.object(ralph_module, "_create_private_file", side_effect=fail_create)
+                with patcher:
+                    with self.assertRaisesRegex(RalphError, "injected"):
+                        launch_ralph_dispatch(preparation, data_root=self.root / f"ralph-data-{failure}",
+                                              launch_id="c" * 64)
+                self.assertEqual(subprocess.check_output(
+                    ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+                self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
+                self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+
+    def test_static_private_root_symlink_or_file_collision_rolls_back_plan(self):
+        for symlink_root in (True, False):
+            with self.subTest(symlink_root=symlink_root):
+                preparation = self.prepare()
+                data = self.root / f"private-{symlink_root}"
+                if symlink_root:
+                    target = self.root / "outside"
+                    target.mkdir()
+                    data.symlink_to(target, target_is_directory=True)
+                else:
+                    data.mkdir(mode=0o700)
+                    (data / ralph_module._private_names("e" * 64)[0]).write_bytes(b"collision")
+                with self.assertRaises(RalphError):
+                    launch_ralph_dispatch(preparation, data_root=data, launch_id="e" * 64)
+                self.assertEqual(subprocess.check_output(
+                    ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+                self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
+
+    def test_unarmed_gate_timeout_or_close_publishes_failure_without_spawning_ralph(self):
+        for closed in (False, True):
+            with self.subTest(closed=closed):
+                data = self.root / f"runner-{closed}"
+                data.mkdir(mode=0o700)
+                launch_id = "d" * 64
+                stdout_name, stderr_name, receipt_name = ralph_module._private_names(launch_id)
+                gate_name = ralph_module._gate_name(launch_id)
+                for name, content in ((stdout_name, b""), (stderr_name, b""),
+                                      (receipt_name, b""), (gate_name, ralph_module._GATE_PENDING)):
+                    path = data / name
+                    path.write_bytes(content)
+                    path.chmod(0o600)
+                if closed:
+                    (data / gate_name).unlink()
+                with mock.patch.object(ralph_runner, "GATE_WAIT_SECONDS", 0.01), \
+                     mock.patch.dict(os.environ, self.env(), clear=False):
+                    self.assertEqual(ralph_runner.main([
+                        "--data-root", str(data), "--stdout-name", stdout_name,
+                        "--stderr-name", stderr_name, "--receipt-name", receipt_name,
+                        "--gate-name", gate_name,
+                    ]), 1)
+                receipt = read_ralph_receipt(data, launch_id)
+                self.assertEqual(receipt, {"status": "failed", "exit_code": 127})
+                self.assertFalse((self.root / "ralph-started").exists())
+
+    def test_pre_arm_gate_failure_reaps_restores_and_rolls_back(self):
+        self.ralph.write_text("#!/bin/sh\n[ \"${1:-}\" = \"-n\" ] && exit 0\nsleep 30\n")
+        self.ralph.chmod(0o755)
+        snapshot = {"persisted": False}
+        def on_spawn(_launch):
+            snapshot["persisted"] = True
+        def on_abort():
+            snapshot["persisted"] = False
+        with mock.patch.dict(os.environ, self.env(), clear=False), \
+             mock.patch.object(ralph_module, "KILL_GRACE_SECONDS", 0.05), \
+             mock.patch.object(ralph_module, "_arm_gate", side_effect=ralph_module._GateArmError(
+                 "injected arm failure", may_have_armed=False)):
+            with self.assertRaisesRegex(RalphError, "gate could not be armed"):
+                self.launch(self.prepare(), on_spawn=on_spawn, on_abort=on_abort)
+        self.assertFalse(snapshot["persisted"])
+        self.assertEqual(subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
+        self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+
+    def test_identity_failure_reaps_unarmed_supervisor_without_spawning_ralph(self):
+        started = self.root / "ralph-started"
+        self.ralph.write_text(
+            "#!/bin/sh\n[ \"${1:-}\" = \"-n\" ] && exit 0\ntouch \"$RALPH_STARTED\"\n"
+        )
+        self.ralph.chmod(0o755)
+        with mock.patch.dict(os.environ, self.env(RALPH_STARTED=str(started)), clear=False), \
+             mock.patch.object(ralph_module, "_identity", return_value=None):
+            with self.assertRaisesRegex(RalphError, "identity could not be established"):
+                self.launch(self.prepare())
+        self.assertFalse(started.exists())
+        self.assertEqual(subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
 
     def test_supervisor_redacts_and_bounds_tail_files(self):
         self.ralph.write_text(
