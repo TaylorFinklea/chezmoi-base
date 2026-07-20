@@ -103,7 +103,11 @@ policy applies to their local tool calls as well.
 
 The helper uses only the Python standard library and accepts explicit
 subcommands. Hook-mediated calls receive the session ID from hook input rather
-than trusting a model-provided identifier.
+than trusting a model-provided identifier. Structured model input crosses the
+Bash hook boundary as one size-bounded, unpadded base64url JSON argument; the
+hook validates its alphabet and command grammar before injection, and the CLI
+decodes then validates the complete JSON value. Pipes, heredocs, redirects,
+and interactive `write_stdin` transport remain forbidden.
 
 State lives in the plugin's writable data directory, not the repository. Each
 record is bound to:
