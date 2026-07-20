@@ -64,11 +64,14 @@ installed helper directly and without a payload:
    planning files, at least two non-Lead phases with exact Verify commands, and
    a visible `ralph` executable.
 2. `../../bin/codex-forge ralph-launch` is the only launch path. It creates the
-   Forge-owned planning commit, runs the exact Codex backend arguments, records
-   the owned PID/process group, and never rewrites Git after the spawn boundary.
-3. `../../bin/codex-forge ralph-status` recovers only a still-matching owned
-   process identity. `../../bin/codex-forge ralph-cancel` is the only
-   cancellation path; it terminates only that owned process group.
+   Forge-owned planning commit, starts a detached plugin-owned supervisor for
+   the exact Codex backend, records a validated owned PID/process group, and
+   returns promptly; it never rewrites Git after the spawn boundary.
+3. `../../bin/codex-forge ralph-status` reads the bounded terminal receipt and
+   recovers only a still-matching owned process identity. It moves a zero exit
+   to completed and every nonzero, invalid, or missing terminal receipt to
+   failed. `../../bin/codex-forge ralph-cancel` is the only cancellation path;
+   it terminates only that owned process group.
 
 Do not call these controls from shaping, direct, terminal, stale-heartbeat, or
 mismatched repository states. They accept no payload, shell syntax, backend

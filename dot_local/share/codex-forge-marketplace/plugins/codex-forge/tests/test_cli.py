@@ -91,6 +91,11 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(body["status"], "frozen")
         self.assertIn("brief_digest", body)
+        self.assertEqual(body["selected_dispatcher"], None)
+        self.assertEqual(body["approval"]["state"], "available")
+        self.assertLessEqual(body["approval"]["expires_in_seconds"], 1800)
+        self.assertEqual(body["verification"], {"passed": 0, "required": 1, "remaining": 1})
+        self.assertEqual(body["ralph"], {"owned": False, "running": False, "terminal": "not-started"})
 
     def test_duplicate_begin_stale_heartbeat_and_changed_repository_binding_are_denied(self):
         result, body = self.run_cli("begin")
@@ -168,8 +173,8 @@ class CLITests(unittest.TestCase):
 
         result, body = self.run_cli("complete", env=env)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(body["code"], "verification_not_terminal")
-        self.assertEqual(store.load(session).status, "ralph_running")
+        self.assertEqual(body["code"], "ralph_failed")
+        self.assertEqual(store.load(session).status, "failed")
 
     def test_ralph_control_commands_are_state_bound_and_persist_owned_identity(self):
         ralph_brief = {**BRIEF, "dispatcher": "ralph", "phases": [
@@ -188,16 +193,15 @@ class CLITests(unittest.TestCase):
 
         preparation = SimpleNamespace(planning_commit="planning-commit")
         marker_digest = "a" * 64
-        def launch(prepared, *, on_spawn):
+        def launch(prepared, *, data_root, launch_id, on_spawn):
             self.assertIs(prepared, preparation)
-            on_spawn(SimpleNamespace(pid=123, pgid=123, start="started", marker_digest=marker_digest))
-            return SimpleNamespace(exit_code=0, stdout="out", stderr="err")
+            on_spawn(SimpleNamespace(identity=SimpleNamespace(pid=123, pgid=123, start="started", marker_digest=base64.urlsafe_b64encode(bytes.fromhex(marker_digest)).decode("ascii")), launch_id=launch_id))
+            return SimpleNamespace(launch_id=launch_id)
 
         with mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
              mock.patch.object(cli_module, "launch_ralph_dispatch", side_effect=launch):
             launched = self.invoke_cli("ralph-launch")
-        self.assertEqual(launched, {"ok": True, "status": "ralph_running", "exit_code": 0,
-                                    "planning_commit": "planning-commit"})
+        self.assertEqual(launched, {"ok": True, "status": "ralph_running", "planning_commit": "planning-commit"})
         self.assertEqual(store.load(self.session).status, "ralph_running")
         ralph_record = json.loads((self.data / f"ralph-{digest_name}.json").read_text())
         persisted_digest = ralph_record["marker_digest"]
@@ -205,19 +209,41 @@ class CLITests(unittest.TestCase):
         self.assertNotIn(marker_digest, json.dumps(ralph_record))
         self.assertNotIn("private-launch-marker", json.dumps(ralph_record))
 
-        with mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": False, "pid": 123, "pgid": 123}):
+        with mock.patch.object(cli_module, "read_ralph_receipt", return_value=None), \
+             mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": True, "pid": 123, "pgid": 123}):
             observed = self.invoke_cli("ralph-status")
         self.assertEqual(observed["planning_commit"], "planning-commit")
-        self.assertEqual(observed["stdout"], "out")
-        self.assertEqual(observed["stderr"], "err")
+        self.assertEqual(observed["terminal"], "running")
         self.assertTrue(observed["owned"])
         self.assertNotIn("marker_digest", observed)
 
-        with mock.patch.object(cli_module, "cancel_owned_ralph", return_value={"cancelled": True, "owned": True, "running": False}):
+        with mock.patch.object(cli_module, "read_ralph_receipt", return_value=None), \
+             mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": True}), \
+             mock.patch.object(cli_module, "cancel_owned_ralph", return_value={"cancelled": True, "owned": True, "running": False}):
             cancelled = self.invoke_cli("ralph-cancel")
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertEqual(store.load(self.session).status, "cancelled")
-        self.assertFalse((self.data / f"ralph-{digest_name}.json").exists())
+        self.assertTrue((self.data / f"ralph-{digest_name}.json").exists())
+
+    def test_ralph_status_receipt_transitions_completed_or_failed(self):
+        self.assertEqual(self.run_cli("begin")[1]["status"], "shaping")
+        store = StateStore(self.data, "0.1.0")
+        state = store.load(self.session)
+        state = transition(transition(transition(state, "freeze"), "approve_ralph"), "ralph_start")
+        store.replace(state)
+        digest_name = hashlib.sha256(self.session.encode()).hexdigest()
+        marker = base64.urlsafe_b64encode(bytes.fromhex("a" * 64)).decode("ascii")
+        (self.data / f"ralph-{digest_name}.json").write_text(json.dumps({
+            "plugin_version": "0.1.0", "session_id": self.session, "cwd": str(self.cwd),
+            "repo_root": None, "git_dir": None, "planning_commit": "plan", "pid": 1,
+            "pgid": 1, "start": "start", "marker_digest": marker, "launch_id": "a" * 64,
+        }))
+        with mock.patch.object(cli_module, "read_ralph_receipt", return_value={"status": "completed", "exit_code": 0}), \
+             mock.patch.object(cli_module, "read_ralph_output", return_value=""):
+            body = self.invoke_cli("ralph-status")
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["terminal"], "completed")
+        self.assertEqual(store.load(self.session).status, "completed")
 
     def test_fail_stores_bounded_reason(self):
         result, _ = self.run_cli("begin")

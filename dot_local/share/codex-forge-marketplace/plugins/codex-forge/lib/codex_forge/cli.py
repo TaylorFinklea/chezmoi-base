@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -27,10 +28,11 @@ from .verification import missing_verification_commands, verification_complete
 from .ralph import (
     RalphError,
     cancel_owned_ralph,
-    encode_marker_digest,
     inspect_ralph_eligibility,
     launch_ralph_dispatch,
     prepare_ralph_dispatch,
+    read_ralph_output,
+    read_ralph_receipt,
     recover_ralph_status,
 )
 
@@ -39,7 +41,7 @@ MAX_STDIN_BYTES = 2 * 1024 * 1024
 MAX_QUESTION_BYTES = 4096
 MAX_FAILURE_BYTES = 2048
 MAX_QUESTIONS = 5
-MAX_RALPH_OUTPUT_BYTES = 64 * 1024
+MAX_RALPH_OUTPUT_BYTES = 4 * 1024
 
 
 class CLIError(ValueError):
@@ -209,12 +211,49 @@ def _metadata(root: Path, session: str) -> dict[str, Any]:
     return record
 
 
+def _selected_dispatcher(state: ForgeState) -> str | None:
+    if state.status in {"approved_direct", "executing"}:
+        return "direct"
+    if state.status == "approved_ralph" or state.status == "ralph_running":
+        return "ralph"
+    return None
+
+
+def _approval_summary(root: Path, session: str, state: ForgeState) -> dict[str, Any]:
+    record = _read_record(root, "approval-", session)
+    if not isinstance(record, dict):
+        return {"state": "none", "expires_in_seconds": None}
+    expiry = record.get("expires_at")
+    remaining = None
+    if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
+        remaining = max(0, min(APPROVAL_TTL_SECONDS, int(expiry - _now())))
+    if state.status == "frozen" and record.get("used") is True:
+        state_name = "recovery_required"
+    elif state.status == "frozen" and remaining == 0:
+        state_name = "expired"
+    elif record.get("used") is True:
+        state_name = "consumed"
+    else:
+        state_name = "available"
+    return {"state": state_name, "expires_in_seconds": remaining}
+
+
 def _summary(state: ForgeState, root: Path, session: str) -> dict[str, Any]:
     meta = _metadata(root, session)
     brief = _read_record(root, "brief-", session)
-    return {"ok": True, "status": state.status, "question_count": meta["question_count"],
-            "brief_digest": brief.get("digest") if isinstance(brief, dict) else None,
-            "failure_reason": meta["failure_reason"]}
+    required = len(state.verification_commands)
+    passed = required - len(missing_verification_commands(state)) if required else 0
+    return {
+        "ok": True,
+        "status": state.status,
+        "question_count": meta["question_count"],
+        "brief_digest": brief.get("digest") if isinstance(brief, dict) else None,
+        "failure_reason": meta["failure_reason"],
+        "selected_dispatcher": _selected_dispatcher(state),
+        "approval": _approval_summary(root, session, state),
+        "verification": {"passed": passed, "required": required, "remaining": max(0, required - passed)},
+        "ralph": _ralph_status_for_state(state, root, session),
+    }
 
 
 def begin() -> dict[str, Any]:
@@ -341,7 +380,9 @@ def freeze(argument: str) -> dict[str, Any]:
 
 def status() -> dict[str, Any]:
     session, root = _env()
-    state, _, _ = _load_bound(root, session, heartbeat=False)
+    state, cwd, repo = _load_bound(root, session, heartbeat=False)
+    if state.status == "ralph_running":
+        state, _, _ = _reconcile_ralph(state, root, session, cwd, repo)
     return _summary(state, root, session)
 
 
@@ -384,8 +425,9 @@ def ralph_launch() -> dict[str, Any]:
         preparation = prepare_ralph_dispatch(brief, cwd)
     except (RalphError, OSError) as exc:
         raise CLIError("ralph_prepare_failed", str(exc)) from exc
+    launch_id = secrets.token_hex(32)
 
-    def on_spawn(identity: Any) -> None:
+    def on_spawn(launch: Any) -> None:
         payload = {
             "plugin_version": PLUGIN_VERSION,
             "session_id": session,
@@ -393,12 +435,11 @@ def ralph_launch() -> dict[str, Any]:
             "repo_root": str(repo.root) if repo is not None else None,
             "git_dir": str(repo.git_dir) if repo is not None and repo.git_dir is not None else None,
             "planning_commit": preparation.planning_commit,
-            "pid": identity.pid,
-            "pgid": identity.pgid,
-            "start": identity.start,
-            "marker_digest": encode_marker_digest(identity.marker_digest),
-            "stdout": "",
-            "stderr": "",
+            "pid": launch.identity.pid,
+            "pgid": launch.identity.pgid,
+            "start": launch.identity.start,
+            "marker_digest": launch.identity.marker_digest,
+            "launch_id": launch.launch_id,
         }
         _write_record(root, "ralph-", session, payload)
         try:
@@ -407,39 +448,28 @@ def ralph_launch() -> dict[str, Any]:
             raise CLIError("state_write_failed", "Ralph start could not be persisted") from exc
 
     try:
-        result = launch_ralph_dispatch(preparation, on_spawn=on_spawn)
-        record = _read_record(root, "ralph-", session)
-        if isinstance(record, dict):
-            _write_record(root, "ralph-", session, {
-                **record,
-                "stdout": result.stdout[-MAX_RALPH_OUTPUT_BYTES:],
-                "stderr": result.stderr[-MAX_RALPH_OUTPUT_BYTES:],
-                "exit_code": result.exit_code,
-            })
-        return {"ok": True, "status": "ralph_running", "exit_code": result.exit_code,
-                "planning_commit": preparation.planning_commit}
+        launch_ralph_dispatch(preparation, data_root=root, launch_id=launch_id, on_spawn=on_spawn)
     except CLIError:
         raise
     except (RalphError, OSError) as exc:
         raise CLIError("ralph_launch_failed", str(exc)) from exc
+    return {"ok": True, "status": "ralph_running", "planning_commit": preparation.planning_commit}
 
 
 def _bound_ralph_record(root: Path, session: str, cwd: Path, repo: RepoIdentity | None) -> dict[str, Any]:
     record = _read_record(root, "ralph-", session)
     required = {"plugin_version", "session_id", "cwd", "repo_root", "git_dir", "planning_commit",
-                "pid", "pgid", "start", "marker_digest", "stdout", "stderr"}
-    allowed = required | {"exit_code"}
-    if (not isinstance(record, dict) or (set(record) != required and set(record) != allowed) or
+                "pid", "pgid", "start", "marker_digest", "launch_id"}
+    if (not isinstance(record, dict) or set(record) != required or
             record.get("plugin_version") != PLUGIN_VERSION or record.get("session_id") != session or
             record.get("cwd") != str(cwd) or not isinstance(record.get("planning_commit"), str) or
             not record["planning_commit"] or type(record.get("pid")) is not int or record["pid"] <= 0 or
             type(record.get("pgid")) is not int or record["pgid"] <= 0 or
             not isinstance(record.get("start"), str) or not record["start"] or
-            not isinstance(record.get("marker_digest"), str) or
-            len(record["marker_digest"]) != 44 or
+            not isinstance(record.get("marker_digest"), str) or len(record["marker_digest"]) != 44 or
             any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=" for char in record["marker_digest"]) or
-            not isinstance(record.get("stdout"), str) or not isinstance(record.get("stderr"), str) or
-            ("exit_code" in record and (type(record["exit_code"]) is not int))):
+            not isinstance(record.get("launch_id"), str) or
+            re.fullmatch(r"[0-9a-f]{64}", record["launch_id"]) is None):
         raise CLIError("ralph_unavailable", "Ralph instance record is unavailable")
     expected_root = str(repo.root) if repo is not None else None
     expected_git_dir = str(repo.git_dir) if repo is not None and repo.git_dir is not None else None
@@ -448,40 +478,102 @@ def _bound_ralph_record(root: Path, session: str, cwd: Path, repo: RepoIdentity 
     return record
 
 
+def _terminal_transition(state: ForgeState, root: Path, exit_code: int) -> ForgeState:
+    if state.status != "ralph_running":
+        return state
+    event = "complete" if exit_code == 0 else "fail"
+    try:
+        state = transition(state, event)
+        _store(root).replace(state)
+    except (StateError, ValueError, OSError) as exc:
+        raise CLIError("state_write_failed", "Ralph terminal state could not be persisted") from exc
+    return state
+
+
+def _reconcile_ralph(state: ForgeState, root: Path, session: str, cwd: Path,
+                     repo: RepoIdentity | None) -> tuple[ForgeState, dict[str, Any], dict[str, Any] | None]:
+    raw = _read_record(root, "ralph-", session)
+    if raw is None:
+        if state.status == "ralph_running":
+            state = _terminal_transition(state, root, 1)
+            return state, {"owned": False, "running": False, "terminal": "missing"}, None
+        return state, {"owned": False, "running": False, "terminal": "not-started"}, None
+    try:
+        record = _bound_ralph_record(root, session, cwd, repo)
+        receipt = read_ralph_receipt(root, record["launch_id"])
+    except (CLIError, RalphError):
+        if state.status == "ralph_running":
+            state = _terminal_transition(state, root, 1)
+        return state, {"owned": False, "running": False, "terminal": "invalid"}, None
+    if receipt is not None and receipt["status"] in {"completed", "failed"}:
+        state = _terminal_transition(state, root, int(receipt["exit_code"]))
+        return state, {"owned": True, "running": False,
+                       "terminal": "completed" if receipt["exit_code"] == 0 else "failed",
+                       "exit_code": receipt["exit_code"]}, record
+    recovered = recover_ralph_status(record)
+    if recovered.get("running"):
+        return state, {"owned": bool(recovered.get("owned")), "running": True, "terminal": "running"}, record
+    if state.status == "ralph_running":
+        state = _terminal_transition(state, root, 1)
+    return state, {"owned": bool(recovered.get("owned")), "running": False, "terminal": "missing"}, record
+
+
+def _ralph_status_for_state(state: ForgeState, root: Path, session: str) -> dict[str, Any]:
+    if state.status not in {"approved_ralph", "ralph_running", "completed", "failed", "cancelled"}:
+        return {"owned": False, "running": False, "terminal": "not-started"}
+    _state, public, _record = _reconcile_ralph(state, root, session, state.cwd, state.repo)
+    return public
+
+
 def ralph_status() -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session, heartbeat=False)
-    record = _read_record(root, "ralph-", session)
-    if record is None:
-        return {"ok": True, "status": state.status, "owned": False, "running": False}
-    record = _bound_ralph_record(root, session, cwd, repo)
-    recovered = recover_ralph_status(record)
-    return {"ok": True, "status": state.status, **recovered,
-            "planning_commit": record.get("planning_commit"),
-            "stdout": record.get("stdout", "")[-MAX_RALPH_OUTPUT_BYTES:],
-            "stderr": record.get("stderr", "")[-MAX_RALPH_OUTPUT_BYTES:]}
+    state, public, record = _reconcile_ralph(state, root, session, cwd, repo)
+    result = {"ok": True, "status": state.status, **public}
+    if record is not None:
+        result["planning_commit"] = record["planning_commit"]
+        try:
+            result["stdout"] = read_ralph_output(root, record["launch_id"], "stdout", limit=MAX_RALPH_OUTPUT_BYTES)
+            result["stderr"] = read_ralph_output(root, record["launch_id"], "stderr", limit=MAX_RALPH_OUTPUT_BYTES)
+        except RalphError:
+            result["stdout"] = ""
+            result["stderr"] = ""
+    return result
 
 
 def ralph_cancel() -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session)
     _ralph_state(state, "ralph_running")
-    record = _bound_ralph_record(root, session, cwd, repo)
+    state, public, record = _reconcile_ralph(state, root, session, cwd, repo)
+    if state.status != "ralph_running":
+        return {"ok": True, "status": state.status, **public}
+    if record is None:
+        raise CLIError("ralph_not_owned", "Ralph instance record is unavailable")
     try:
         result = cancel_owned_ralph(record)
     except RalphError as exc:
         raise CLIError("ralph_not_owned", str(exc)) from exc
     try:
-        _store(root).replace(transition(state, "cancel"))
-        _delete_record(root, "ralph-", session)
-    except (CLIError, StateError, ValueError, OSError) as exc:
+        next_state = transition(state, "cancel")
+        _store(root).replace(next_state)
+    except (StateError, ValueError, OSError) as exc:
         raise CLIError("state_write_failed", "Ralph cancellation could not be persisted") from exc
+    # Keep the owned record and terminal receipt for recovery/status; status
+    # never exposes paths, marker material, or unbounded output.
     return {"ok": True, "status": "cancelled", **result}
 
 
 def complete() -> dict[str, Any]:
     session, root = _env()
-    state, _, _ = _load_bound(root, session)
+    state, cwd, repo = _load_bound(root, session)
+    if state.status == "ralph_running":
+        state, public, _ = _reconcile_ralph(state, root, session, cwd, repo)
+        if state.status == "completed":
+            return {"ok": True, "status": "completed", "ralph": public}
+        if state.status == "failed":
+            raise CLIError("ralph_failed", "Ralph did not complete successfully")
+        raise CLIError("ralph_terminal_required", "Ralph is still running; use ralph-status or ralph-cancel")
     if state.status != "executing" or not verification_complete(state):
         missing = missing_verification_commands(state)
         detail = ", ".join(missing[:8])

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import base64
 import ctypes
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from .brief import Brief, Phase
+from .state import SecureJSONRecordStore, StateError
 
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_OUTPUT_LINES = 200
@@ -67,6 +69,15 @@ class RalphResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class RalphLaunch:
+    identity: ProcessIdentity
+    launch_id: str
+    stdout_name: str
+    stderr_name: str
+    receipt_name: str
 
 
 def _slug(value: str) -> str:
@@ -341,6 +352,8 @@ def prepare_ralph_dispatch(brief: Brief, cwd: Path, *, date: str | None = None) 
             raise RalphError("Ralph preflight modified Forge handoff bytes")
         if _run(["git", "status", "--porcelain"], cwd, check=True).stdout != status_before:
             raise RalphError("Ralph preflight modified the worktree")
+        if _run(["git", "rev-parse", "HEAD"], cwd, check=True).stdout.strip() != before_head:
+            raise RalphError("Ralph preflight modified HEAD")
         current = _render_current_state(_read_structural(_safe_path(cwd, FORGE_PATHS[0])), brief.phases)
         roadmap = _render_roadmap(_read_structural(_safe_path(cwd, FORGE_PATHS[1])), brief)
         generated = _render_phase_spec(brief, date)
@@ -537,22 +550,108 @@ def _same_identity(record: Mapping[str, Any], identity: ProcessIdentity | None) 
             secrets.compare_digest(record_digest, identity_digest))
 
 
-def _spawn_backend(cwd: Path, marker: str) -> subprocess.Popen[bytes]:
-    """Spawn Ralph with a private per-launch environment ownership marker."""
+def _private_names(launch_id: str) -> tuple[str, str, str]:
+    if re.fullmatch(r"[0-9a-f]{64}", launch_id) is None:
+        raise RalphError("invalid Ralph launch identifier")
+    return (f"ralph-stdout-{launch_id}.log", f"ralph-stderr-{launch_id}.log",
+            f"ralph-receipt-{launch_id}.json")
+
+
+def _private_root(root: Path) -> Path:
+    candidate = Path(root)
+    try:
+        if candidate.exists() and stat.S_ISLNK(candidate.lstat().st_mode):
+            raise RalphError("Ralph private output root is unavailable")
+    except OSError as exc:
+        raise RalphError("Ralph private output root is unavailable") from exc
+    root = candidate.resolve(strict=False)
+    store = SecureJSONRecordStore(root, max_bytes=MAX_OUTPUT_BYTES)
+    try:
+        store._ensure_root()
+    except (StateError, OSError) as exc:
+        raise RalphError("Ralph private output root is unavailable") from exc
+    return root
+
+
+def _create_private_file(root: Path, name: str) -> None:
+    path = root / name
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        raise RalphError("Ralph private output file could not be created") from exc
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_private_json(root: Path, name: str) -> dict[str, Any] | None:
+    try:
+        root = _private_root(root)
+        return SecureJSONRecordStore(root, max_bytes=8192).read(name)
+    except (StateError, OSError) as exc:
+        raise RalphError("Ralph terminal receipt is malformed or inaccessible") from exc
+
+
+def _receipt(launch: RalphLaunch, data_root: Path) -> dict[str, Any] | None:
+    value = _read_private_json(data_root, launch.receipt_name)
+    if value is None:
+        return None
+    status = value.get("status")
+    if value.get("version") != 1 or status not in {"running", "completed", "failed"}:
+        raise RalphError("Ralph terminal receipt is malformed or inaccessible")
+    if status == "running":
+        if type(value.get("ralph_pid")) is not int or value["ralph_pid"] <= 0:
+            raise RalphError("Ralph terminal receipt is malformed or inaccessible")
+        return {"status": "running"}
+    if type(value.get("exit_code")) is not int or not isinstance(value.get("completed_at"), (int, float)):
+        raise RalphError("Ralph terminal receipt is malformed or inaccessible")
+    return {"status": status, "exit_code": value["exit_code"]}
+
+
+def read_ralph_receipt(data_root: Path, launch_id: str) -> dict[str, Any] | None:
+    """Read only the bounded, token-free public terminal receipt fields."""
+    stdout_name, stderr_name, receipt_name = _private_names(launch_id)
+    del stdout_name, stderr_name
+    launch = RalphLaunch(ProcessIdentity(1, "receipt", 1, "a" * 64), launch_id, "", "", receipt_name)
+    return _receipt(launch, Path(data_root).resolve(strict=False))
+
+
+def read_ralph_output(data_root: Path, launch_id: str, stream: str, *, limit: int = 4096) -> str:
+    if stream not in {"stdout", "stderr"} or type(limit) is not int or not 0 < limit <= MAX_OUTPUT_BYTES:
+        raise RalphError("invalid Ralph output request")
+    stdout_name, stderr_name, _ = _private_names(launch_id)
+    root = _private_root(Path(data_root))
+    path = root / (stdout_name if stream == "stdout" else stderr_name)
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise RalphError("Ralph private output is unavailable")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            size = os.fstat(fd).st_size
+            os.lseek(fd, max(0, size - limit), os.SEEK_SET)
+            raw = os.read(fd, limit)
+        finally:
+            os.close(fd)
+    except RalphError:
+        raise
+    except OSError as exc:
+        raise RalphError("Ralph private output is unavailable") from exc
+    return raw.decode("utf-8", "replace")
+
+
+def _spawn_backend(cwd: Path, marker: str, data_root: Path, launch_id: str) -> subprocess.Popen[bytes]:
+    """Start a detached supervisor that owns Ralph's process group and pipes."""
+    stdout_name, stderr_name, receipt_name = _private_names(launch_id)
     environment = dict(os.environ)
     environment[OWNERSHIP_MARKER_ENV] = marker
-    return subprocess.Popen(["ralph", "-t", "codex"], cwd=cwd, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    runner = Path(__file__).with_name("ralph_runner.py")
+    return subprocess.Popen([sys.executable, str(runner), "--data-root", str(data_root),
+                             "--stdout-name", stdout_name, "--stderr-name", stderr_name,
+                             "--receipt-name", receipt_name], cwd=cwd, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True, env=environment)
-
-
-def _close_pipes(child: subprocess.Popen[bytes]) -> None:
-    for stream in (child.stdout, child.stderr):
-        if stream is not None:
-            try:
-                stream.close()
-            except OSError:
-                pass
 
 
 def _group_exists(pgid: int) -> bool:
@@ -577,7 +676,6 @@ def _matching_process_identity(expected: ProcessIdentity) -> ProcessIdentity | N
 
 
 def _terminate_child(child: subprocess.Popen[bytes], *, grace_seconds: float) -> None:
-    """Use the Popen handle only when group ownership cannot be revalidated."""
     try:
         if child.poll() is None:
             child.terminate()
@@ -596,7 +694,6 @@ def _terminate_child(child: subprocess.Popen[bytes], *, grace_seconds: float) ->
 
 def _terminate_owned_group(expected: ProcessIdentity, child: subprocess.Popen[bytes], *,
                             grace_seconds: float = KILL_GRACE_SECONDS) -> None:
-    """Signal a group only while its leader still matches the spawned identity."""
     current = _matching_process_identity(expected)
     if current is None:
         _terminate_child(child, grace_seconds=grace_seconds)
@@ -605,8 +702,6 @@ def _terminate_owned_group(expected: ProcessIdentity, child: subprocess.Popen[by
         if not _group_exists(current.pgid):
             _terminate_child(child, grace_seconds=grace_seconds)
             return
-        # Check again immediately before TERM: PID/PGID reuse must never target
-        # an unrelated group.
         current = _matching_process_identity(expected)
         if current is None:
             _terminate_child(child, grace_seconds=grace_seconds)
@@ -618,115 +713,74 @@ def _terminate_owned_group(expected: ProcessIdentity, child: subprocess.Popen[by
             if current is None or not _group_exists(current.pgid):
                 return
             time.sleep(0.02)
-        # Revalidate immediately before KILL as well; when the leader vanished
-        # or was reused, direct Popen cleanup is the only safe remaining action.
         current = _matching_process_identity(expected)
         if current is None:
             _terminate_child(child, grace_seconds=grace_seconds)
             return
         if _group_exists(current.pgid):
-            os.killpg(current.pgid, signal.SIGKILL)
+            # A final identity check immediately precedes every group signal.
+            current = _matching_process_identity(expected)
+            if current is not None:
+                os.killpg(current.pgid, signal.SIGKILL)
     except OSError:
         _terminate_child(child, grace_seconds=grace_seconds)
     finally:
         _terminate_child(child, grace_seconds=grace_seconds)
 
 
-def _capture_pipe(stream: Any, buffer: list[bytes], secrets_to_redact: Sequence[bytes]) -> None:
-    carry = max((len(secret) for secret in secrets_to_redact), default=1)
-    pending = b""
-    try:
-        while True:
-            chunk = stream.read(8192)
-            if not chunk:
-                buffer[0] = _append_bounded(buffer[0], _redact_raw(pending, secrets_to_redact))
+def _await_runner_ready(launch: RalphLaunch, data_root: Path, child: subprocess.Popen[bytes]) -> None:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        receipt = _receipt(launch, data_root)
+        if receipt is not None:
+            if receipt["status"] == "running":
                 return
-            pending = _redact_raw(pending + chunk, secrets_to_redact)
-            if len(pending) > carry:
-                safe, pending = (pending[:-carry], pending[-carry:]) if carry else (pending, b"")
-                buffer[0] = _append_bounded(buffer[0], safe)
-    finally:
-        try:
-            stream.close()
-        except OSError:
-            pass
+            # The state record remains recoverable; its terminal receipt will
+            # make status deterministically fail rather than strand a launch.
+            return
+        if child.poll() is not None:
+            return
+        time.sleep(0.02)
 
 
-def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
-                 on_spawn: Callable[[ProcessIdentity], None] | None = None,
-                 on_output: Callable[[str, str], None] | None = None) -> RalphResult:
+def launch_ralph_dispatch(preparation: RalphPreparation, *, data_root: Path,
+                          launch_id: str, on_spawn: Callable[[RalphLaunch], None] | None = None) -> RalphLaunch:
+    """Return after an owned detached Ralph supervisor has been validated.
+
+    The caller never waits for Ralph.  The supervisor drains output and writes
+    the terminal receipt, so later status/cancel operations retain the same
+    group-identity checks after this CLI process has exited.
+    """
+    root = _private_root(data_root)
+    stdout_name, stderr_name, receipt_name = _private_names(launch_id)
+    for name in (stdout_name, stderr_name):
+        _create_private_file(root, name)
     marker = secrets.token_urlsafe(_MARKER_DIGEST_BYTES)
     marker_digest = _marker_digest(marker)
-    secrets_to_redact = (marker.encode("utf-8"), marker_digest.encode("ascii"))
     try:
-        child = _spawn_backend(cwd, marker)
+        child = _spawn_backend(preparation.cwd, marker, root, launch_id)
     except OSError as exc:
+        _rollback(preparation)
         raise RalphError("Ralph launch failed before spawn") from exc
-
-    # This is the transaction boundary: after Popen returns no Git rewind is
-    # permitted, including if a later reader or identity operation fails.
-    stdout: list[bytes] = [b""]
-    stderr: list[bytes] = [b""]
-    readers = [
-        threading.Thread(target=_capture_pipe, args=(child.stdout, stdout, secrets_to_redact), daemon=True),
-        threading.Thread(target=_capture_pipe, args=(child.stderr, stderr, secrets_to_redact), daemon=True),
-    ]
-    identity: ProcessIdentity | None = None
-
+    # The Popen boundary is durable: no Git rollback after this point.
+    identity = _identity(child.pid, marker_digest)
+    if identity is None:
+        _terminate_child(child, grace_seconds=KILL_GRACE_SECONDS)
+        raise RalphError("Ralph process identity could not be established")
+    launch = RalphLaunch(ProcessIdentity(identity.pid, identity.start, identity.pgid,
+                                         encode_marker_digest(identity.marker_digest)),
+                        launch_id, stdout_name, stderr_name, receipt_name)
     try:
-        if on_started:
-            on_started()
-        for reader in readers:
-            reader.start()
-        identity = _identity(child.pid, marker_digest)
-        if identity is None:
-            raise RalphError("Ralph process identity could not be established")
         if on_spawn:
-            on_spawn(ProcessIdentity(identity.pid, identity.start, identity.pgid,
-                                     encode_marker_digest(identity.marker_digest)))
-        exit_code = child.wait()
-        for reader in readers:
-            if reader.is_alive():
-                reader.join(timeout=KILL_GRACE_SECONDS)
-        _close_pipes(child)
-        out = _bounded(stdout[0])
-        err = _bounded(stderr[0])
-        if on_output:
-            if out:
-                on_output("stdout", out)
-            if err:
-                on_output("stderr", err)
-        return RalphResult(exit_code, out, err)
+            on_spawn(launch)
+        _await_runner_ready(launch, root, child)
+        # Reap the detached supervisor in a live CLI process without making
+        # launch synchronous. If the CLI exits first, normal parent-death
+        # reparenting applies; if it remains alive, this avoids zombie children.
+        threading.Thread(target=child.wait, daemon=True).start()
+        return launch
     except Exception:
-        if identity is None:
-            _terminate_child(child, grace_seconds=KILL_GRACE_SECONDS)
-        else:
-            _terminate_owned_group(identity, child, grace_seconds=KILL_GRACE_SECONDS)
-        raise
-    finally:
-        _close_pipes(child)
-        for reader in readers:
-            if reader.is_alive():
-                reader.join(timeout=KILL_GRACE_SECONDS)
-
-
-def launch_ralph_dispatch(preparation: RalphPreparation, *, on_spawn: Callable[[ProcessIdentity], None] | None = None,
-                          on_output: Callable[[str, str], None] | None = None) -> RalphResult:
-    spawned = False
-
-    def started_callback() -> None:
-        nonlocal spawned
-        spawned = True
-
-    try:
-        return _run_backend(preparation.cwd, on_started=started_callback, on_spawn=on_spawn,
-                            on_output=on_output)
-    except Exception:
-        # Only a failure before Popen returns may rewind Forge's planning commit.
-        # Once a backend process existed, even a later persistence failure retains
-        # the durable plan rather than rewriting Git history after dispatch.
-        if not spawned:
-            _rollback(preparation)
+        _terminate_owned_group(identity, child, grace_seconds=KILL_GRACE_SECONDS)
         raise
 
 

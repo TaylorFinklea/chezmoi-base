@@ -17,6 +17,7 @@ import tomllib
 from typing import Any, Mapping, Optional
 
 from .policy import PolicyDecision, _has_agent_environment, _tool_input_command, classify_tool
+from .ralph import RalphError, read_ralph_receipt, recover_ralph_status
 from .state import SecureJSONRecordStore, StateError, StateStore, transition
 from .verification import VerificationError, missing_verification_commands, record_verification
 
@@ -459,20 +460,43 @@ def _handle_prompt(event: Mapping[str, Any], env: Any) -> HookResult:
         return _block_prompt()
     if action != "approve" and dispatcher is not None:
         return _block_prompt()
+    original = dict(record)
     record = dict(record)
     record["used"] = True
     record["used_at"] = _now(env)
-    _write_json(_data_root(env), _hashed_name("approval-", state.session_id), record)
+    approval_name = _hashed_name("approval-", state.session_id)
+    _write_json(_data_root(env), approval_name, record)
+    if action == "approve":
+        event_name = "approve_direct" if dispatcher == "direct" else "approve_ralph"
+    elif action == "revise":
+        event_name = "revise"
+    else:
+        event_name = "cancel"
     try:
-        if action == "approve":
-            next_state = transition(state, "approve_direct" if dispatcher == "direct" else "approve_ralph")
-        elif action == "revise":
-            next_state = transition(state, "revise")
-        else:
-            next_state = transition(state, "cancel")
+        next_state = transition(state, event_name)
         _store(env).replace(next_state)
     except Exception as exc:
-        raise HookError("Forge approval failed; nonce consumed and shaping remains locked") from exc
+        # A nonce is consumed before the lifecycle write to prevent replay. If
+        # that write failed before publication, prove the state remains frozen
+        # and restore exactly the original unused record so the user can retry.
+        try:
+            observed = _store(env).load(state.session_id)
+        except (StateError, ValueError, OSError):
+            observed = None
+        if observed is not None and observed.status == next_state.status:
+            return HookResult({})
+        restored = False
+        if observed is not None and observed.status == "frozen":
+            try:
+                current = _read_json(_data_root(env), approval_name)
+                if current == record:
+                    _write_json(_data_root(env), approval_name, original)
+                    restored = _read_json(_data_root(env), approval_name) == original
+            except HookError:
+                restored = False
+        if restored:
+            raise HookError("Forge approval transition failed; nonce was restored and the exact command may be retried") from exc
+        raise HookError("Forge approval transition failed; nonce recovery is required and shaping remains locked") from exc
     return HookResult({})
 
 
@@ -521,10 +545,60 @@ def _missing_reason(missing: tuple[str, ...]) -> str:
     return reason[:4096]
 
 
+def _ralph_stop_status(state: Any, env: Any) -> tuple[Any, bool, str]:
+    root = _data_root(env)
+    try:
+        record = _record_store(root).read(_hashed_name("ralph-", state.session_id))
+    except (StateError, OSError):
+        record = None
+    terminal: dict[str, Any] | None = None
+    if isinstance(record, Mapping) and isinstance(record.get("launch_id"), str):
+        try:
+            terminal = read_ralph_receipt(root, record["launch_id"])
+        except RalphError:
+            terminal = {"status": "failed", "exit_code": 1}
+    if terminal is not None and terminal.get("status") in {"completed", "failed"}:
+        event = "complete" if terminal.get("exit_code") == 0 else "fail"
+        try:
+            state = transition(state, event)
+            _store(env).replace(state)
+        except (StateError, ValueError, OSError) as exc:
+            raise HookError("Forge Ralph terminal state could not be persisted") from exc
+        return state, False, ""
+    if isinstance(record, Mapping):
+        try:
+            recovered = recover_ralph_status(record)
+        except Exception:
+            recovered = {"owned": False, "running": False}
+        if recovered.get("owned") and recovered.get("running"):
+            return state, True, "Forge Ralph is still running; use ralph-status to recover its terminal receipt or ralph-cancel to stop its owned process group."
+    # No valid receipt plus no live owned supervisor is terminal failure; this
+    # releases Stop rather than leaving a successful run stranded forever.
+    try:
+        state = transition(state, "fail")
+        _store(env).replace(state)
+    except (StateError, ValueError, OSError) as exc:
+        raise HookError("Forge Ralph recovery state could not be persisted") from exc
+    return state, False, ""
+
+
 def _handle_stop(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
     if state is None or state.status in {"shaping", "frozen", "completed", "cancelled", "failed"}:
         return HookResult({})
+    if state.status == "ralph_running":
+        state, running, reason = _ralph_stop_status(state, env)
+        if not running:
+            return HookResult({})
+        name = _hashed_name("stop-", state.session_id)
+        record = _read_json(_data_root(env), name)
+        count = 0 if record is None else record["count"]
+        if count >= CONTINUATION_LIMIT:
+            # Preserve the durable ralph_running state: it is the recovery
+            # handle for a live owned group after Codex stops this turn.
+            return HookResult({})
+        _write_json(_data_root(env), name, {"count": count + 1})
+        return HookResult({"decision": "block", "reason": reason}, blocked=True)
     if state.status != "executing":
         return HookResult({})
     missing = missing_verification_commands(state)
@@ -540,12 +614,9 @@ def _handle_stop(event: Mapping[str, Any], env: Any) -> HookResult:
             _store(env).replace(transition(state, "fail"))
         except (StateError, ValueError, OSError) as exc:
             raise HookError("Forge execution could not be failed safely") from exc
-        # The durable failed state releases the Stop guard. Allow this event
-        # through so Codex can end immediately; subsequent Stops are no-ops.
         return HookResult({})
     _write_json(_data_root(env), name, {"count": count + 1})
     return HookResult({"decision": "block", "reason": _missing_reason(missing)}, blocked=True)
-
 
 def handle_hook(event: Mapping[str, Any], env: Any = None) -> HookResult:
     """Handle one documented Codex hook object and return one JSON response."""

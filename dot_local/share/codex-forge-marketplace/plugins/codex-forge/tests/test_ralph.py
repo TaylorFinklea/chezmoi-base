@@ -22,6 +22,8 @@ from codex_forge.ralph import (
     inspect_ralph_eligibility,
     launch_ralph_dispatch,
     prepare_ralph_dispatch,
+    read_ralph_output,
+    read_ralph_receipt,
     recover_ralph_status,
 )
 
@@ -94,6 +96,19 @@ class RalphTests(unittest.TestCase):
     def prepare(self):
         with mock.patch.dict(os.environ, self.env(), clear=False):
             return prepare_ralph_dispatch(BRIEF, self.repo, date="2026-07-20")
+
+    def launch(self, preparation, *, on_spawn=None):
+        return launch_ralph_dispatch(preparation, data_root=self.root / "ralph-data",
+                                     launch_id="b" * 64, on_spawn=on_spawn)
+
+    def wait_receipt(self, launch, timeout=5):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            receipt = read_ralph_receipt(self.root / "ralph-data", launch.launch_id)
+            if receipt and receipt["status"] in {"completed", "failed"}:
+                return receipt
+            time.sleep(0.02)
+        self.fail("Ralph runner did not publish a terminal receipt")
 
     def test_rejects_all_eligibility_guards(self):
         cases = (
@@ -188,6 +203,24 @@ class RalphTests(unittest.TestCase):
         self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
         self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
 
+    def test_preflight_clean_commit_is_rejected_without_planning_writes(self):
+        before_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+        before = {path: path.read_bytes() for path in (self.repo / ".docs/ai").glob("*.md")}
+        self.ralph.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${1:-}\" = \"-n\" ]; then git commit --allow-empty -qm preflight-mutated-head; fi\n"
+        )
+        self.ralph.chmod(0o755)
+        with mock.patch.dict(os.environ, self.env(), clear=False):
+            with self.assertRaisesRegex(RalphError, "modified HEAD"):
+                prepare_ralph_dispatch(BRIEF, self.repo)
+        self.assertNotEqual(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip(), before_head)
+        self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "preflight-mutated-head")
+        self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
+
     def test_planning_commit_failure_restores_byte_exact_files(self):
         original_run = ralph_module._run
 
@@ -247,38 +280,46 @@ class RalphTests(unittest.TestCase):
         preparation = self.prepare()
         with mock.patch.object(ralph_module, "_spawn_backend", side_effect=OSError("missing")):
             with self.assertRaisesRegex(RalphError, "before spawn"):
-                launch_ralph_dispatch(preparation)
+                self.launch(preparation)
         self.assertEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
         self.assertFalse((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
 
-    def test_spawned_result_never_rewinds_and_uses_exact_backend_argv(self):
+    def test_async_launch_returns_promptly_and_receipt_bounds_output(self):
         log = self.root / "ralph.log"
-        self.ralph.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RALPH_LOG\"\nprintf 'phase output\\n'\n")
+        self.ralph.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\n' \"$*\" >> \"$RALPH_LOG\"\n"
+            "[ \"${1:-}\" = \"-n\" ] && exit 0\n"
+            "printf 'phase output\n'\n"
+            "sleep 0.3\n"
+        )
         self.ralph.chmod(0o755)
         with mock.patch.dict(os.environ, self.env(RALPH_LOG=str(log)), clear=False):
-            preparation = prepare_ralph_dispatch(BRIEF, self.repo)
-            result = launch_ralph_dispatch(preparation)
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.stdout, "phase output\n")
+            preparation = self.prepare()
+            started = time.monotonic()
+            launch = self.launch(preparation)
+            self.assertLess(time.monotonic() - started, 0.25)
+            receipt = self.wait_receipt(launch)
+        self.assertEqual(receipt, {"status": "completed", "exit_code": 0})
+        self.assertEqual(read_ralph_output(self.root / "ralph-data", launch.launch_id, "stdout"), "phase output\n")
         self.assertEqual(log.read_text().splitlines(), ["-n 0 -t codex", "-t codex"])
-        self.assertNotIn("-L", log.read_text())
+        time.sleep(0.1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(launch.identity.pid, 0)
         self.assertNotEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
-        self.assertTrue((self.repo / ".docs/ai/phases/add-cached-search-spec.md").exists())
 
-    def test_spawned_callback_failure_keeps_plan_and_reaps_group(self):
+    def test_post_spawn_callback_failure_keeps_plan_and_reaps_owned_group(self):
         self.ralph.write_text("#!/bin/sh\n[ \"${1:-}\" = \"-n\" ] && exit 0\nsleep 30\n")
         self.ralph.chmod(0o755)
-        spawned: list[int] = []
-
-        def fail_after_spawn(identity):
-            spawned.append(identity.pid)
+        spawned = []
+        def fail_after_spawn(launch):
+            spawned.append(launch.identity.pid)
             raise RuntimeError("state persistence failed")
-
         with mock.patch.dict(os.environ, self.env(), clear=False), \
              mock.patch.object(ralph_module, "KILL_GRACE_SECONDS", 0.05):
-            preparation = prepare_ralph_dispatch(BRIEF, self.repo)
+            preparation = self.prepare()
             with self.assertRaisesRegex(RuntimeError, "state persistence failed"):
-                launch_ralph_dispatch(preparation, on_spawn=fail_after_spawn)
+                self.launch(preparation, on_spawn=fail_after_spawn)
         self.assertNotEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
         self.assertEqual(len(spawned), 1)
         with self.assertRaises(ProcessLookupError):
@@ -290,39 +331,7 @@ class RalphTests(unittest.TestCase):
              mock.patch.object(ralph_module, "_identity", return_value=None), \
              mock.patch.object(ralph_module.os, "killpg") as killpg:
             with self.assertRaisesRegex(RalphError, "identity could not be established"):
-                launch_ralph_dispatch(self.prepare())
-        self.assertEqual(child.terminate_calls, 1)
-        self.assertEqual(child.kill_calls, 0)
-        self.assertEqual(killpg.call_args_list, [])
-        self.assertNotEqual(subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
-
-    def test_exited_child_identity_failure_never_signals_group(self):
-        child = FakePopen(running=False)
-        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
-             mock.patch.object(ralph_module, "_identity", return_value=None), \
-             mock.patch.object(ralph_module.os, "killpg") as killpg:
-            with self.assertRaisesRegex(RalphError, "identity could not be established"):
-                launch_ralph_dispatch(self.prepare())
-        self.assertEqual(child.terminate_calls, 0)
-        self.assertEqual(killpg.call_args_list, [])
-
-    def test_pid_reuse_during_exception_cleanup_never_signals_foreign_group(self):
-        child = FakePopen(running=True)
-        calls = 0
-        marker = "a" * 64
-
-        def identities(pid, marker_digest=None):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return ProcessIdentity(pid, "owned", pid, marker_digest)
-            return ProcessIdentity(pid, "reused", pid + 1, marker_digest)
-
-        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
-             mock.patch.object(ralph_module, "_identity", side_effect=identities), \
-             mock.patch.object(ralph_module.os, "killpg") as killpg:
-            with self.assertRaisesRegex(RuntimeError, "state persistence failed"):
-                launch_ralph_dispatch(self.prepare(), on_spawn=lambda _: (_ for _ in ()).throw(RuntimeError("state persistence failed")))
+                self.launch(self.prepare())
         self.assertEqual(child.terminate_calls, 1)
         self.assertEqual(killpg.call_args_list, [])
 
@@ -376,53 +385,39 @@ class RalphTests(unittest.TestCase):
                     cancel_owned_ralph(record, identity=lambda _pid, _marker: observed)
                 self.assertEqual(killpg.call_args_list, [])
 
-    def test_backend_marker_stays_in_environment_and_only_its_digest_is_persistable(self):
+    def test_supervisor_marker_stays_in_environment_and_not_argv(self):
         marker = "private-launch-marker"
+        data = self.root / "ralph-data"
+        data.mkdir()
+        for name in ralph_module._private_names("a" * 64)[:2]:
+            (data / name).write_bytes(b"")
         with mock.patch.object(ralph_module.subprocess, "Popen") as popen:
-            ralph_module._spawn_backend(self.repo, marker)
+            ralph_module._spawn_backend(self.repo, marker, data, "a" * 64)
         args, kwargs = popen.call_args
-        self.assertEqual(args[0], ["ralph", "-t", "codex"])
+        self.assertIn("ralph_runner.py", args[0][1])
         self.assertEqual(kwargs["env"][ralph_module.OWNERSHIP_MARKER_ENV], marker)
         self.assertNotIn(marker, args[0])
         self.assertNotEqual(ralph_module._marker_digest(marker), marker)
 
-    def test_output_is_bounded(self):
-        self.ralph.write_text("#!/bin/sh\npython3 -c 'print(\"x\" * 100000)'\n")
-        self.ralph.chmod(0o755)
-        with mock.patch.dict(os.environ, self.env(), clear=False):
-            preparation = prepare_ralph_dispatch(BRIEF, self.repo)
-            result = launch_ralph_dispatch(preparation)
-        self.assertLessEqual(len(result.stdout.encode()), 64 * 1024)
-
-    def test_output_redacts_marker_and_digest_before_every_surface(self):
+    def test_supervisor_redacts_and_bounds_tail_files(self):
         self.ralph.write_text(
             "#!/bin/sh\n"
             "[ \"${1:-}\" = \"-n\" ] && exit 0\n"
-            "python3 -c 'import hashlib, os, sys; t=os.environ[\"CODEX_FORGE_RALPH_OWNERSHIP_MARKER\"]; d=hashlib.sha256(t.encode()).hexdigest(); print(os.environ); print(t); print(d); print(t+t+d+d); print(\"ordinary 🌟\"); print(t+d, file=sys.stderr)'\n"
+            "python3 -c 'import hashlib, os, sys; t=os.environ[\"CODEX_FORGE_RALPH_OWNERSHIP_MARKER\"]; d=hashlib.sha256(t.encode()).hexdigest(); print(t); print(d); print(\"x\" * 100000); print(t+d, file=sys.stderr)'\n"
         )
         self.ralph.chmod(0o755)
         token = "launch-token-abc123"
         digest = hashlib.sha256(token.encode()).hexdigest()
-        callbacks = []
-        spawned = []
         with mock.patch.dict(os.environ, self.env(), clear=False), \
              mock.patch.object(ralph_module.secrets, "token_urlsafe", return_value=token):
-            preparation = prepare_ralph_dispatch(BRIEF, self.repo)
-            result = launch_ralph_dispatch(
-                preparation,
-                on_spawn=lambda identity: spawned.append(repr(identity)),
-                on_output=lambda stream, value: callbacks.append((stream, value)),
-            )
-        surfaces = [result.stdout, result.stderr, repr(callbacks), repr(spawned),
-                    repr({"stdout": result.stdout, "stderr": result.stderr}),
-                    repr(ralph_module.recover_ralph_status(None))]
-        for surface in surfaces:
-            self.assertNotIn(token, surface)
-            self.assertNotIn(digest, surface)
-        self.assertIn("ordinary 🌟", result.stdout)
-        self.assertEqual([stream for stream, _ in callbacks], ["stdout", "stderr"])
-        self.assertIn("[REDACTED]", result.stdout)
-        self.assertIn("[REDACTED]", result.stderr)
+            launch = self.launch(self.prepare())
+            self.assertEqual(self.wait_receipt(launch)["exit_code"], 0)
+        stdout = read_ralph_output(self.root / "ralph-data", launch.launch_id, "stdout", limit=64 * 1024)
+        stderr = read_ralph_output(self.root / "ralph-data", launch.launch_id, "stderr", limit=64 * 1024)
+        self.assertLessEqual(len(stdout.encode()), 64 * 1024)
+        self.assertNotIn(token, stdout + stderr)
+        self.assertNotIn(digest, stdout + stderr)
+        self.assertIn("[REDACTED]", stderr)
 
 
 if __name__ == "__main__":

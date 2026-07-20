@@ -92,7 +92,7 @@ from pathlib import Path
 import sys
 
 from codex_forge.brief import Brief, DecisionEnvelope, Phase
-from codex_forge.ralph import launch_ralph_dispatch, prepare_ralph_dispatch
+from codex_forge.ralph import launch_ralph_dispatch, prepare_ralph_dispatch, read_ralph_receipt
 
 cwd = Path(sys.argv[1])
 codex_log = Path(sys.argv[2])
@@ -105,9 +105,17 @@ brief = Brief(
 prepared = prepare_ralph_dispatch(brief, cwd, date="2026-07-20")
 if codex_log.exists():
     raise SystemExit("real Ralph preflight invoked Codex")
-result = launch_ralph_dispatch(prepared)
-if result.exit_code != 0:
-    raise SystemExit(result.exit_code)
+launch = launch_ralph_dispatch(prepared, data_root=cwd.parent / "forge-data", launch_id="a" * 64)
+import time
+for _ in range(250):
+    receipt = read_ralph_receipt(cwd.parent / "forge-data", launch.launch_id)
+    if receipt and receipt["status"] in {"completed", "failed"}:
+        if receipt.get("exit_code") != 0:
+            raise SystemExit(receipt["exit_code"])
+        break
+    time.sleep(0.02)
+else:
+    raise SystemExit("Ralph runner did not publish terminal receipt")
 EOF
 
 "$python_executable" - "$fixture/ralph.argv" "$fixture/codex.argv" <<'EOF'
@@ -151,7 +159,7 @@ brief = Brief(
 prepared = prepare_ralph_dispatch(brief, Path(sys.argv[1]))
 with mock.patch("codex_forge.ralph._spawn_backend", side_effect=OSError("injected spawn failure")):
     try:
-        launch_ralph_dispatch(prepared)
+        launch_ralph_dispatch(prepared, data_root=Path(sys.argv[1]).parent / "forge-data", launch_id="b" * 64)
     except RalphError:
         raise SystemExit(0)
 raise SystemExit("expected launch to fail before Popen")

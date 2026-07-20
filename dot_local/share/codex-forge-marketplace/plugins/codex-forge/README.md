@@ -53,11 +53,15 @@ what you intend. `revise` invalidates approval and returns to shaping;
 
 `direct` runs the approved brief in the current Codex session and records exact
 verification evidence. `ralph` is available only when its clean-repository,
-plan, phase, and backend preflight checks pass; it records ownership of the
-Ralph process group before launch. Use `$forge status` to inspect lifecycle
-state, dispatcher, brief digest, approval expiry, verification progress, and
-Ralph ownership. Cancellation only signals a process group still proven to be
-owned by Forge, with bounded graceful and forced termination.
+plan, phase, and backend preflight checks pass. Launch returns after a detached,
+plugin-owned process group is validated; its supervisor drains output into
+private bounded tail files and atomically records the terminal exit receipt.
+Use `$forge status` to inspect lifecycle state, selected dispatcher, bounded
+approval expiry, direct verification progress, and Ralph ownership/running/
+terminal status. `ralph-status` reconciles a zero receipt to completed and a
+nonzero, invalid, or missing receipt to failed. Cancellation only signals a
+process group still proven to be owned by Forge, with bounded graceful and
+forced termination.
 
 ## Threat boundary
 

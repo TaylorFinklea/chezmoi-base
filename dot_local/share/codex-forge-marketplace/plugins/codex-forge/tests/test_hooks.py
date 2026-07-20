@@ -5,10 +5,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
+from codex_forge import hooks as hooks_module
 from codex_forge.hooks import FORGE_SCOUT_INSTRUCTIONS, PLUGIN_VERSION, handle_hook
 from codex_forge.state import ForgeState, StateStore, transition
 
@@ -164,10 +166,32 @@ class HookTests(unittest.TestCase):
         self.assertTrue(result.blocked)
         self.assertEqual(self.store.load(self.session).status, "frozen")
         approval = self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
-        self.assertTrue(json.loads(approval.read_text())["used"])
+        self.assertFalse(json.loads(approval.read_text())["used"])
         self.store.replace = original_replace
-        replay = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
-        self.assertEqual(replay.output["decision"], "block")
+        retry = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+        self.assertEqual(retry.output, {})
+        self.assertEqual(self.store.load(self.session).status, "approved_direct")
+
+    def test_nonce_restore_failure_is_explicit_and_fail_closed(self):
+        self._freeze_with_nonce()
+        original_replace = self.store.replace
+        original_write = hooks_module._write_json
+        writes = 0
+        def fail_transition(_state):
+            raise OSError("injected")
+        def fail_restore(*args, **kwargs):
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise hooks_module.HookError("injected restore")
+            return original_write(*args, **kwargs)
+        self.store.replace = fail_transition
+        with mock.patch.object(hooks_module, "_write_json", side_effect=fail_restore):
+            result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+        self.store.replace = original_replace
+        self.assertTrue(result.blocked)
+        self.assertIn("nonce recovery is required", result.output["reason"])
+        self.assertTrue(json.loads((self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")).read_text())["used"])
 
     def test_user_prompt_rejects_stale_or_replayed_nonce(self):
         self._freeze_with_nonce()
@@ -313,6 +337,26 @@ class HookTests(unittest.TestCase):
         third = handle_hook(self.event("Stop", stop_hook_active=True, last_assistant_message="incomplete"), self.env)
         self.assertEqual(third.output, {})
         self.assertEqual(self.store.load(self.session).status, "failed")
+
+    def test_stop_recovers_ralph_or_leaves_owned_run_actionable_once(self):
+        state = self.store.create(self.session, self.cwd, None)
+        state = transition(transition(transition(state, "freeze"), "approve_ralph"), "ralph_start")
+        self.store.replace(state)
+        name = "ralph-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json"
+        self.data.mkdir(mode=0o700, exist_ok=True)
+        (self.data / name).write_text(json.dumps({"pid": 123, "pgid": 123, "start": "start", "marker_digest": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=", "launch_id": "a" * 64}))
+        with mock.patch.object(hooks_module, "read_ralph_receipt", return_value=None), \
+             mock.patch.object(hooks_module, "recover_ralph_status", return_value={"owned": True, "running": True}):
+            first = handle_hook(self.event("Stop"), self.env)
+            second = handle_hook(self.event("Stop"), self.env)
+        self.assertTrue(first.blocked)
+        self.assertIn("ralph-status", first.output["reason"])
+        self.assertEqual(second.output, {})
+        self.assertEqual(self.store.load(self.session).status, "ralph_running")
+        with mock.patch.object(hooks_module, "read_ralph_receipt", return_value={"status": "completed", "exit_code": 0}):
+            recovered = handle_hook(self.event("Stop"), self.env)
+        self.assertEqual(recovered.output, {})
+        self.assertEqual(self.store.load(self.session).status, "completed")
 
     def test_direct_writers_are_bound_to_cwd_and_repository(self):
         state = self.store.create(self.session, self.cwd, None)
