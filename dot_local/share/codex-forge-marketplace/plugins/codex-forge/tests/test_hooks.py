@@ -83,6 +83,23 @@ class HookTests(unittest.TestCase):
                                                 tool_input={"command": command}), self.env)
                 self.assertNotIn("updatedInput", result.output.get("hookSpecificOutput", {}))
 
+    def test_bash_environment_bypass_is_denied_before_helper_injection(self):
+        self.store.create(self.session, self.cwd, None)
+        helper = str(self.plugin_root / "hooks" / "forge_hook.py")
+        cases = (
+            ("git status", {"PATH": "/tmp"}),
+            ("git status", {"PYTHONPATH": "/tmp"}),
+            ("git status", ["BASH_ENV=/tmp/evil"]),
+            (f"python3 {helper} status", {"PATH": "/tmp"}),
+        )
+        for command, environment in cases:
+            with self.subTest(command=command, environment=environment):
+                result = handle_hook(self.event("PreToolUse", tool_name="Bash",
+                                                tool_input={"command": command, "env": environment}), self.env)
+                output = result.output["hookSpecificOutput"]
+                self.assertEqual(output["permissionDecision"], "deny")
+                self.assertNotIn("updatedInput", output)
+
     def _freeze_with_nonce(self, nonce="abc123"):
         existing = self.store.load(self.session)
         if existing is None:

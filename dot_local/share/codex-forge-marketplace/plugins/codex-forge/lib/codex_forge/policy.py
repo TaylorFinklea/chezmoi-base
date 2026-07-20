@@ -10,6 +10,10 @@ SHAPING_STATUSES = frozenset(("shaping", "frozen"))
 WRITER_TOOLS = frozenset(("apply_patch", "Edit", "Write", "write_file", "file_write"))
 CONTROL_SYNTAX = re.compile(r"(?:[;&|<>`]|\$\(|\$\{|\n|\r)")
 MCP_NAMESPACE = re.compile(r"(?i)(?:^|[._:/\\-])mcp(?:$|[._:/\\-])")
+BASH_ENVIRONMENT_FIELDS = frozenset((
+    "cwd", "workdir", "working_directory", "shell", "executable", "timeout", "timeout_ms",
+    "sandbox_permissions", "additional_permissions", "run_in_background", "environment",
+))
 
 
 @dataclass(frozen=True)
@@ -177,6 +181,8 @@ def _shell_allowed(command: Any) -> bool:
         return len(words) > 1 and all(re.fullmatch(r"[A-Za-z0-9_.+-]+", word) for word in words[1:])
     if program == "codex-forge":
         return words[1:] == ["status"]
+    if program == "python3":
+        return len(words) == 3 and re.fullmatch(r"/.+/hooks/forge_hook\.py", words[1]) is not None and words[2] == "status"
     return False
 
 
@@ -190,6 +196,17 @@ def _tool_input_command(tool_input: Any) -> Optional[str]:
         if isinstance(value, str):
             return value
     return None
+
+
+def _has_agent_environment(tool_input: Any) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    if BASH_ENVIRONMENT_FIELDS.intersection(tool_input):
+        return True
+    if "env" not in tool_input:
+        return False
+    value = tool_input["env"]
+    return value not in (None, "", {}, [])
 
 
 def _is_mcp_namespace(tool_name: str) -> bool:
@@ -219,6 +236,8 @@ def classify_tool(tool_name: str, tool_input: Any, state: Any) -> PolicyDecision
             return PolicyDecision(True, "managed forge-scout agent is permitted during shaping")
         return PolicyDecision(False, "Forge shaping blocks non-managed or mixed-mode agents until nonce approval.")
     if tool_name == "Bash":
+        if _has_agent_environment(tool_input):
+            return PolicyDecision(False, "Forge shaping blocks agent-supplied Bash execution environment.")
         if _shell_allowed(_tool_input_command(tool_input)):
             return PolicyDecision(True, "read-only shell command is permitted during shaping")
         return PolicyDecision(False, "Forge shaping blocks mutating or ambiguous shell commands.")

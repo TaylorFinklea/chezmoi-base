@@ -269,10 +269,10 @@ def _inject_helper_input(tool_input: Any, event: Mapping[str, Any], env: Any) ->
     if session_id is None:
         return None
     updated = deepcopy(tool_input)
-    helper_env = dict(updated.get("env") or {})
-    helper_env["CODEX_FORGE_SESSION_ID"] = session_id
-    helper_env["CODEX_FORGE_DATA"] = str(_data_root(env))
-    updated["env"] = helper_env
+    updated["env"] = {
+        "CODEX_FORGE_SESSION_ID": session_id,
+        "CODEX_FORGE_DATA": str(_data_root(env)),
+    }
     return updated
 
 
@@ -342,10 +342,11 @@ def _handle_session_start(event: Mapping[str, Any], env: Any) -> HookResult:
 def _handle_pre_tool(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
     tool_name = event.get("tool_name", "")
-    updated = _inject_helper_input(event.get("tool_input"), event, env) if tool_name == "Bash" else None
-    if updated is not None:
-        return HookResult(_hook_output("PreToolUse", updatedInput=updated))
     decision = classify_tool(tool_name, event.get("tool_input", {}), state)
+    if decision.allowed and tool_name == "Bash":
+        updated = _inject_helper_input(event.get("tool_input"), event, env)
+        if updated is not None:
+            return HookResult(_hook_output("PreToolUse", updatedInput=updated))
     if decision.deny:
         tool_name_lower = tool_name.lower() if isinstance(tool_name, str) else ""
         return HookResult(_hook_output(

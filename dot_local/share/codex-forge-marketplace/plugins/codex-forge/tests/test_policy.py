@@ -108,6 +108,21 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(classify_tool(name, {"command": "git status"}, self.state).allowed)
 
+    def test_bash_execution_environment_fields_are_denied_during_shaping(self):
+        commands = ("git status", "git log --oneline -3 --no-textconv", "codex-forge status")
+        fields = ("cwd", "workdir", "working_directory", "shell", "executable", "timeout", "timeout_ms")
+        for command in commands:
+            for field in fields:
+                with self.subTest(command=command, field=field):
+                    self.assertFalse(classify_tool("Bash", {"command": command, field: "/tmp"}, self.state).allowed)
+
+    def test_bash_nonempty_environment_mapping_or_list_is_denied(self):
+        for environment in ({"PATH": "/tmp"}, [("PYTHONPATH", "/tmp")], ["BASH_ENV=/tmp/evil"]):
+            with self.subTest(environment=environment):
+                self.assertFalse(classify_tool("Bash", {"command": "git status", "env": environment}, self.state).allowed)
+        self.assertTrue(classify_tool("Bash", {"command": "git status", "env": {}}, self.state).allowed)
+        self.assertTrue(classify_tool("Bash", {"command": "git status", "env": []}, self.state).allowed)
+
     def test_missing_state_and_approved_state_defer_to_codex(self):
         self.assertTrue(classify_tool("unknown_local_tool", {}, None).allowed)
         self.assertTrue(classify_tool("Write", {}, self.approved).allowed)
