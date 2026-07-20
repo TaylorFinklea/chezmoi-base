@@ -13,7 +13,7 @@ import time
 from typing import Any, Mapping, Optional
 
 from .policy import classify_tool
-from .state import StateError, StateStore, transition
+from .state import SecureJSONRecordStore, StateError, StateStore, transition
 
 PLUGIN_VERSION = "0.1.0"
 CONTINUATION_LIMIT = 1
@@ -96,42 +96,25 @@ def _hashed_name(prefix: str, session_id: str) -> str:
     return prefix + hashlib.sha256(session_id.encode("utf-8")).hexdigest() + ".json"
 
 
-def _safe_root(root: Path) -> None:
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
-    if root.is_symlink() or not root.is_dir():
-        raise HookError("Forge data root must be a directory")
+HOOK_RECORD_MAX_BYTES = 1024 * 1024
+
+
+def _record_store(root: Path) -> SecureJSONRecordStore:
+    return SecureJSONRecordStore(root, max_bytes=HOOK_RECORD_MAX_BYTES)
 
 
 def _write_json(root: Path, name: str, payload: Mapping[str, Any]) -> None:
-    _safe_root(root)
-    target = root / name
-    if target.exists() and (target.is_symlink() or not target.is_file()):
-        raise HookError("Forge hook record must be a regular file")
-    raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    temporary = root / ("." + name + ".tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        view = memoryview(raw)
-        while view:
-            view = view[os.write(fd, view):]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, target)
+        _record_store(root).write(name, payload)
+    except (StateError, OSError, TypeError) as exc:
+        raise HookError("Forge hook record could not be persisted") from exc
 
 
 def _read_json(root: Path, name: str) -> Optional[dict[str, Any]]:
-    target = root / name
     try:
-        if target.is_symlink() or not target.is_file():
-            return None
-        with target.open("rb") as stream:
-            payload = json.loads(stream.read(1024 * 1024 + 1))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+        return _record_store(root).read(name)
+    except (StateError, OSError) as exc:
+        raise HookError("Forge hook record is malformed or inaccessible") from exc
 
 
 def _status_context(state: Any) -> str:

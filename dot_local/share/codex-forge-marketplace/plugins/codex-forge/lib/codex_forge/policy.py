@@ -8,10 +8,12 @@ from typing import Any, Optional
 
 SHAPING_STATUSES = frozenset(("shaping", "frozen"))
 WRITER_TOOLS = frozenset(("apply_patch", "Edit", "Write", "write_file", "file_write"))
-READ_ONLY_COMMANDS = frozenset(("status", "log", "diff", "show", "rev-parse"))
-SAFE_PROGRAMS = frozenset(("rg", "find", "ls", "pwd", "which", "command"))
-INTERPRETERS = frozenset(("python", "python3", "node", "nodejs", "ruby", "perl"))
 CONTROL_SYNTAX = re.compile(r"(?:[;&|<>`]|\$\(|\$\{|\n|\r)")
+MCP_NAMESPACE = re.compile(r"(?i)(?:^|[._:/\\-])mcp(?:$|[._:/\\-])")
+WRITER_INTENT = re.compile(
+    r"\b(?:write|writ(?:e|es|ing)|edit|modify|mutat(?:e|es|ing)|implement|patch|create|delete|remove|save|commit|rename|move|install|apply)\w*\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -33,21 +35,138 @@ class PolicyDecision:
         return "allow" if self.allowed else "deny"
 
 
+def _walk_values(value: Any):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key)
+            yield from _walk_values(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _walk_values(child)
+    elif isinstance(value, str):
+        yield value
+    elif isinstance(value, bool):
+        yield "true" if value else "false"
+
+
 def _is_read_only_agent(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
-    mode = value.get("mode")
-    agent_type = value.get("agent_type")
-    if isinstance(mode, str) and mode.lower() in {"read", "readonly", "read-only", "scout", "explore"}:
-        return True
-    if isinstance(agent_type, str) and agent_type.lower() in {"scout", "reader", "explorer", "read-only"}:
-        return True
-    text = " ".join(str(value.get(key, "")) for key in ("prompt", "task", "description")).lower()
-    if not text:
+    metadata = []
+    for key in ("mode", "agent_type", "role", "kind"):
+        candidate = value.get(key)
+        if isinstance(candidate, str):
+            metadata.append(candidate.lower())
+    read_markers = {"read", "readonly", "read-only", "scout", "explore", "explorer", "reader"}
+    if not any(marker in read_markers for marker in metadata):
         return False
-    writer_words = re.search(r"\b(write|edit|modify|mutat|implement|patch|create|delete|remove)\w*\b", text)
-    scout_words = re.search(r"\b(read|scout|inspect|explore|analy[sz]e|report|find|search)\w*\b", text)
-    return bool(scout_words and not writer_words)
+    return not any(WRITER_INTENT.search(text) for text in _walk_values(value))
+
+
+def _safe_git(words: list[str]) -> bool:
+    if len(words) < 2:
+        return False
+    command = words[1]
+    args = words[2:]
+    if command == "status":
+        options = {"--short", "--branch", "--porcelain", "--untracked-files", "--ignored", "--ahead-behind"}
+    elif command == "log":
+        options = {"--oneline", "--decorate", "--all", "--graph", "--stat", "--patch", "--no-patch", "--follow"}
+    elif command == "diff":
+        options = {"--stat", "--name-only", "--name-status", "--check", "--cached", "--staged", "--no-ext-diff", "--no-renames"}
+    elif command == "show":
+        options = {"--stat", "--name-only", "--name-status", "--format=short", "--no-patch", "--patch"}
+    elif command == "rev-parse":
+        options = {"--show-toplevel", "--show-prefix", "--git-dir", "--is-inside-work-tree", "--is-inside-git-dir", "--verify"}
+    else:
+        return False
+    after_separator = False
+    for arg in args:
+        if arg == "--":
+            after_separator = True
+            continue
+        if after_separator:
+            continue
+        if arg in options:
+            continue
+        if command == "log" and (re.fullmatch(r"-[0-9]+", arg) or re.fullmatch(r"--(?:max-count|since|until)=.+", arg)):
+            continue
+        if command == "rev-parse" and arg.startswith("--verify="):
+            continue
+        if arg.startswith("-"):
+            return False
+    return True
+
+
+def _safe_ls(words: list[str]) -> bool:
+    short_options = set("1ACFHLRSTUacdfghiklmnopqrstux")
+    long_options = {
+        "--all", "--almost-all", "--author", "--classify", "--directory", "--full-time",
+        "--group-directories-first", "--human-readable", "--inode", "--long", "--size",
+        "--time-style=long-iso", "--color=never",
+    }
+    for arg in words[1:]:
+        if arg == "--":
+            continue
+        if arg.startswith("--"):
+            if arg not in long_options:
+                return False
+        elif arg.startswith("-"):
+            if not arg or any(char not in short_options for char in arg[1:]):
+                return False
+    return True
+
+
+def _safe_rg(words: list[str]) -> bool:
+    no_value = {"-n", "--line-number", "-l", "--files-with-matches", "-i", "--ignore-case", "-w", "--word-regexp", "-F", "--fixed-strings", "--hidden", "--no-ignore", "--files", "--count", "--stats"}
+    value_prefixes = ("--glob=", "--type=", "--max-count=")
+    value_options = {"-g", "--glob", "-t", "--type", "--max-count"}
+    expecting = False
+    for arg in words[1:]:
+        if expecting:
+            if not arg or arg.startswith("-"):
+                return False
+            expecting = False
+            continue
+        if arg in no_value or any(arg.startswith(prefix) for prefix in value_prefixes):
+            continue
+        if arg in value_options:
+            expecting = True
+            continue
+        if arg.startswith("-"):
+            return False
+    return not expecting
+
+
+def _safe_find(words: list[str]) -> bool:
+    if len(words) < 2:
+        return False
+    predicates = {
+        "-name": 1, "-iname": 1, "-path": 1, "-ipath": 1, "-type": 1, "-size": 1,
+        "-mtime": 1, "-atime": 1, "-ctime": 1, "-user": 1, "-group": 1,
+        "-maxdepth": 1, "-mindepth": 1, "-print": 0, "-print0": 0, "-ls": 0,
+        "-prune": 0, "-readable": 0, "-empty": 0, "-true": 0, "-false": 0,
+        "!": 0, "-not": 0, "-a": 0, "-and": 0, "-o": 0, "-or": 0,
+        "(": 0, ")": 0, "-H": 0, "-L": 0, "-P": 0, "-xdev": 0, "-depth": 0,
+    }
+    index = 1
+    while index < len(words) and not words[index].startswith("-") and words[index] not in {"!", "(", ")"}:
+        index += 1
+    if index == 1:
+        return False
+    while index < len(words):
+        arg = words[index]
+        if arg not in predicates:
+            return False
+        needed = predicates[arg]
+        if index + needed >= len(words) + 0:
+            return False
+        for offset in range(1, needed + 1):
+            operand = words[index + offset]
+            if not operand or operand.startswith("-"):
+                return False
+        index += needed + 1
+    return True
 
 
 def _shell_allowed(command: Any) -> bool:
@@ -57,20 +176,28 @@ def _shell_allowed(command: Any) -> bool:
         words = shlex.split(command, posix=True)
     except ValueError:
         return False
-    if not words or any(not isinstance(word, str) or not word for word in words):
+    if not words or any(not isinstance(word, str) or not word or word.startswith("#") for word in words):
         return False
-    program = words[0].rsplit("/", 1)[-1]
+    program = words[0]
+    if "/" in program or "\\" in program:
+        return False
     if program == "git":
-        if len(words) < 2 or words[1] not in READ_ONLY_COMMANDS:
-            return False
-        return not any(word in {"-c", "--exec-path"} for word in words[2:])
-    if program in SAFE_PROGRAMS or program == "codex-forge":
-        return True
+        return _safe_git(words)
+    if program == "rg":
+        return _safe_rg(words)
+    if program == "find":
+        return _safe_find(words)
+    if program == "ls":
+        return _safe_ls(words)
+    if program == "pwd":
+        return len(words) == 1
+    if program == "which":
+        return len(words) > 1 and all(re.fullmatch(r"[A-Za-z0-9_.+-]+", word) for word in words[1:])
+    if program == "codex-forge":
+        return words[1:] == ["status"]
     if program in {"pytest", "py.test"}:
-        return "--collect-only" in words[1:]
-    if program in INTERPRETERS:
-        # Interpreter invocation is only useful here for non-running test discovery.
-        return "--collect-only" in words
+        safe = {"--collect-only", "-q", "--quiet", "-v", "--verbose"}
+        return words[1:].count("--collect-only") == 1 and all(arg in safe or not arg.startswith("-") for arg in words[1:])
     return False
 
 
@@ -86,21 +213,21 @@ def _tool_input_command(tool_input: Any) -> Optional[str]:
     return None
 
 
-def classify_tool(tool_name: str, tool_input: Any, state: Any) -> PolicyDecision:
-    """Classify a Codex tool without executing or expanding its shell input.
+def _is_mcp_namespace(tool_name: str) -> bool:
+    return bool(MCP_NAMESPACE.search(tool_name)) or tool_name.lower().startswith("mcp")
 
-    A missing Forge state means the normal Codex policy remains authoritative.
-    During shaping/frozen, only explicit read-only operations are accepted.
-    """
+
+def classify_tool(tool_name: str, tool_input: Any, state: Any) -> PolicyDecision:
+    """Classify a Codex tool without executing or expanding its shell input."""
     if state is None:
         return PolicyDecision(True, "no Forge state; defer to Codex policy")
     status = getattr(state, "status", None)
-    if status not in SHAPING_STATUSES:
-        # Approved execution is still not an OS sandbox; hooks only guard the
-        # pre-approval workflow and leave normal Codex permissions in charge.
+    if status not in {"shaping", "frozen"}:
         return PolicyDecision(True, "Forge approval is active")
     if not isinstance(tool_name, str) or not tool_name:
         return PolicyDecision(False, "Forge shaping denies unknown tools.", False)
+    if _is_mcp_namespace(tool_name):
+        return PolicyDecision(False, "Forge shaping denies unknown MCP tools.", False)
     canonical = tool_name.rsplit(".", 1)[-1]
     if canonical in WRITER_TOOLS or tool_name.lower() in {name.lower() for name in WRITER_TOOLS}:
         return PolicyDecision(False, "Forge shaping blocks writer tools until nonce approval.")
@@ -116,12 +243,8 @@ def classify_tool(tool_name: str, tool_input: Any, state: Any) -> PolicyDecision
         if _shell_allowed(_tool_input_command(tool_input)):
             return PolicyDecision(True, "read-only shell command is permitted during shaping")
         return PolicyDecision(False, "Forge shaping blocks mutating or ambiguous shell commands.")
-    # MCP tools are not assumed safe merely because their names are structured.
-    if tool_name.startswith("mcp__") or tool_name.startswith("MCP") or "://" in tool_name:
-        return PolicyDecision(False, "Forge shaping denies unknown MCP tools.", False)
     return PolicyDecision(False, "Forge shaping denies unknown tools.", False)
 
 
-# Exposed for focused tests without making shell classification executable.
 def is_read_only_shell(command: Any) -> bool:
     return _shell_allowed(command)

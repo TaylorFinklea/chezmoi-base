@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import stat
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 SCHEMA_VERSION = 1
 PLUGIN_VERSION = "0.1.0"
@@ -207,12 +207,20 @@ def _state_from_payload(payload: Any) -> ForgeState:
                       payload["schema_version"], payload["plugin_version"])
 
 
-class StateStore:
-    def __init__(self, data_root: Path, plugin_version: str):
+class SecureJSONRecordStore:
+    """Private, atomic JSON records with fail-closed filesystem checks."""
+
+    def __init__(self, data_root: Path, max_bytes: int = 10 * 1024 * 1024):
         self.data_root = Path(data_root)
-        self.plugin_version = plugin_version
-        if not isinstance(plugin_version, str) or not plugin_version:
-            raise ValueError("plugin_version is required")
+        self.max_bytes = max_bytes
+        if type(max_bytes) is not int or max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+
+    def _validate_name(self, name: str) -> None:
+        if not isinstance(name, str) or not name or name in {".", ".."}:
+            raise StateError("invalid record name")
+        if Path(name).name != name or "/" in name or "\\" in name or "\x00" in name:
+            raise StateError("record name must be a leaf")
 
     def _validate_data_root(self) -> None:
         absolute_root = Path(os.path.abspath(self.data_root))
@@ -248,10 +256,6 @@ class StateStore:
             if not self._root_exists():
                 raise StateError("state root must be a non-symlink directory")
 
-    def path_for(self, session_id: str) -> Path:
-        _valid_session_id(session_id)
-        return self.data_root / hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-
     def _check_record(self, path: Path) -> None:
         try:
             info = path.lstat()
@@ -260,34 +264,125 @@ class StateStore:
         if stat_is_symlink(info) or not stat_is_regular(info):
             raise StateError("state record must be a regular file")
 
-    def load(self, session_id: str) -> Optional[ForgeState]:
+    def read(self, name: str) -> Optional[dict[str, Any]]:
+        self._validate_name(name)
         self._validate_data_root()
-        path = self.path_for(session_id)
         if not self._root_exists():
             return None
+        path = self.data_root / name
         self._check_record(path)
         try:
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(path, flags)
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError:
             return None
         except OSError as exc:
-            raise StateError("cannot open state record") from exc
+            raise StateError("cannot open JSON record") from exc
         try:
             if not stat_is_regular(os.fstat(fd)):
-                raise StateError("state record must be regular")
+                raise StateError("JSON record must be regular")
             try:
-                raw = os.read(fd, 10 * 1024 * 1024 + 1)
-                if len(raw) > 10 * 1024 * 1024 or os.read(fd, 1):
-                    raise StateError("state record is oversized")
-                text = raw.decode("utf-8")
-                payload = json.loads(text)
+                raw = os.read(fd, self.max_bytes + 1)
+                if len(raw) > self.max_bytes or os.read(fd, 1):
+                    raise StateError("JSON record is oversized")
+                payload = json.loads(raw.decode("utf-8"))
             except StateError:
                 raise
             except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
-                raise StateError("corrupt state record") from exc
+                raise StateError("corrupt JSON record") from exc
         finally:
             os.close(fd)
+        if not isinstance(payload, dict):
+            raise StateError("JSON record must be an object")
+        return payload
+
+    def write(self, name: str, payload: Mapping[str, Any], exclusive: bool = False) -> None:
+        self._validate_name(name)
+        if not isinstance(payload, Mapping):
+            raise TypeError("JSON record payload must be an object")
+        self._validate_data_root()
+        self._ensure_root()
+        path = self.data_root / name
+        self._check_record(path)
+        raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if len(raw) > self.max_bytes:
+            raise StateError("JSON record is oversized")
+        temp = self.data_root / ("." + name + "." + secrets.token_hex(12) + ".tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(temp, flags, 0o600)
+            try:
+                view = memoryview(raw)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.chmod(temp, 0o600)
+            if exclusive:
+                os.link(temp, path, follow_symlinks=False)
+                os.unlink(temp)
+            else:
+                os.replace(temp, path)
+            dir_fd = os.open(self.data_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+            raise StateError("could not atomically persist JSON record") from exc
+
+    def delete(self, name: str) -> None:
+        self._validate_name(name)
+        self._validate_data_root()
+        if not self._root_exists():
+            return
+        path = self.data_root / name
+        self._check_record(path)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        dir_fd = os.open(self.data_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+
+class StateStore:
+    def __init__(self, data_root: Path, plugin_version: str):
+        self.data_root = Path(data_root)
+        self.plugin_version = plugin_version
+        self._records = SecureJSONRecordStore(self.data_root)
+        if not isinstance(plugin_version, str) or not plugin_version:
+            raise ValueError("plugin_version is required")
+
+    def _validate_data_root(self) -> None:
+        self._records._validate_data_root()
+
+    def _root_exists(self) -> bool:
+        return self._records._root_exists()
+
+    def _ensure_root(self) -> None:
+        self._records._ensure_root()
+
+    def path_for(self, session_id: str) -> Path:
+        _valid_session_id(session_id)
+        return self.data_root / hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+    def _check_record(self, path: Path) -> None:
+        self._records._check_record(path)
+
+    def load(self, session_id: str) -> Optional[ForgeState]:
+        _valid_session_id(session_id)
+        path = self.path_for(session_id)
+        payload = self._records.read(path.name)
+        if payload is None:
+            return None
         state = _state_from_payload(payload)
         if state.session_id != session_id:
             raise StateError("session binding mismatch")
@@ -318,52 +413,11 @@ class StateStore:
     def _persist(self, state: ForgeState, exclusive: bool) -> None:
         _validate_state_types(state, self.plugin_version)
         path = self.path_for(state.session_id)
-        self._check_record(path)
-        payload = json.dumps(_state_payload(state), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        temp = self.data_root / ("." + path.name + "." + secrets.token_hex(12) + ".tmp")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            fd = os.open(temp, flags, 0o600)
-            try:
-                view = memoryview(payload)
-                while view:
-                    view = view[os.write(fd, view):]
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            os.chmod(temp, 0o600)
-            if exclusive:
-                os.link(temp, path, follow_symlinks=False)
-                os.unlink(temp)
-            else:
-                os.replace(temp, path)
-            dir_fd = os.open(self.data_root, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError as exc:
-            try:
-                temp.unlink()
-            except FileNotFoundError:
-                pass
-            raise StateError("could not atomically persist state") from exc
+        self._records.write(path.name, _state_payload(state), exclusive=exclusive)
 
     def delete(self, session_id: str) -> None:
-        self._validate_data_root()
         path = self.path_for(session_id)
-        if not self._root_exists():
-            return
-        self._check_record(path)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            return
-        dir_fd = os.open(self.data_root, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        self._records.delete(path.name)
 
 
 def stat_is_symlink(info: os.stat_result) -> bool:

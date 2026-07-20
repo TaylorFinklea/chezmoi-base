@@ -120,6 +120,64 @@ class HookTests(unittest.TestCase):
         self.assertEqual(bad.returncode, 2)
         self.assertEqual(json.loads(bad.stdout)["decision"], "block")
 
+    def test_hook_records_reject_hostile_roots_and_leaf_symlinks(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        hostile = self.root / "hostile"
+        hostile.symlink_to(outside, target_is_directory=True)
+        result = handle_hook(self.event("SessionStart", source="startup", reason="startup"), {**self.env, "data_root": hostile})
+        self.assertEqual(result.exit_code, 2)
+        ancestor = self.root / "ancestor"
+        ancestor.symlink_to(outside, target_is_directory=True)
+        result = handle_hook(self.event("SessionStart", source="startup", reason="startup"), {**self.env, "data_root": ancestor / "nested"})
+        self.assertEqual(result.exit_code, 2)
+        self._freeze_with_nonce()
+        approval = self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+        target = self.root / "approval-target"
+        target.write_text(approval.read_text())
+        approval.unlink()
+        approval.symlink_to(target)
+        result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+        self.assertEqual(result.exit_code, 2)
+        self.assertTrue(result.blocked)
+
+    def test_hook_records_use_unique_private_temps_and_private_modes(self):
+        self.data.mkdir(mode=0o700)
+        heartbeat_name = "heartbeat-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json"
+        stale = self.data / ("." + heartbeat_name + ".stale.tmp")
+        stale.write_text("stale")
+        handle_hook(self.event("SessionStart", source="startup", reason="startup"), self.env)
+        heartbeat = self.data / heartbeat_name
+        self.assertEqual(stat.S_IMODE(self.data.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(heartbeat.stat().st_mode), 0o600)
+        self.assertTrue(stale.exists())
+        self._freeze_with_nonce()
+        approval = self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+        result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+        self.assertEqual(result.output, {})
+        self.assertEqual(stat.S_IMODE(approval.stat().st_mode), 0o600)
+
+    def test_malformed_oversized_and_invalid_utf8_hook_records_block_fail_closed(self):
+        self._freeze_with_nonce()
+        approval = self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+        for raw in (b"{", b"x" * (1024 * 1024 + 1), b"\xff"):
+            with self.subTest(size=len(raw)):
+                approval.write_bytes(raw)
+                result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+                self.assertEqual(result.exit_code, 2)
+                self.assertTrue(result.blocked)
+
+    def test_malformed_stop_record_does_not_reset_continuation_budget(self):
+        state = self.store.create(self.session, self.cwd, None)
+        self.store.replace(transition(transition(state, "freeze"), "approve_direct"))
+        self.store.replace(transition(self.store.load(self.session), "begin"))
+        stop = self.data / ("stop-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+        self.data.mkdir(mode=0o700, exist_ok=True)
+        stop.write_bytes(b"not-json")
+        result = handle_hook(self.event("Stop", stop_hook_active=False, last_assistant_message="incomplete"), self.env)
+        self.assertEqual(result.exit_code, 2)
+        self.assertTrue(result.blocked)
+
 
 if __name__ == "__main__":
     unittest.main()
