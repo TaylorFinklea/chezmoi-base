@@ -1,0 +1,50 @@
+version = 1
+default_mode = "command"
+default_backend = "pi"
+default_shell = "auto"
+
+[ui]
+close_after_insert = true
+popup_width = "80%"
+popup_height = "70%"
+stream = true
+
+[context]
+attach_output_automatically = false
+default_output_lines = 120
+max_output_bytes = 131072
+
+[history]
+# Persist per-mode prompt history (↑/↓ recall) across popup sessions. This
+# writes your prompts (not responses) to an owner-only file in the state dir —
+# a deliberate opt-in past herdr-ask's ephemeral-by-default posture.
+persist = true
+max_entries = 500
+
+[backends.ollama]
+kind = "openai-compatible"
+base_url = "http://127.0.0.1:11434/v1"
+model = "auto"
+credential = { source = "none" }
+
+[backends.codex]
+kind = "process"
+adapter = "codex"
+model = "auto"
+timeout_seconds = 60
+
+[backends.claude]
+kind = "process"
+adapter = "claude"
+model = "auto"
+timeout_seconds = 60
+
+[backends.pi]
+kind = "process"
+adapter = "pi"
+model = "auto"
+timeout_seconds = 60
+# Model picker opens on this "scoped" subset (Tab toggles to the full list).
+# Glob patterns; edit to taste. Providers available: neuralwatt, ollama-cloud,
+# ollama-local, openai-codex, opencode-go.
+model_scope = ["openai-codex/*", "neuralwatt/*"]
