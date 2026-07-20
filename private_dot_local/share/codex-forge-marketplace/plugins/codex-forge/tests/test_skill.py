@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import re
 import unittest
@@ -21,6 +22,17 @@ class SkillTests(unittest.TestCase):
                 self.assertIn(required, text)
         self.assertNotIn("hooks/forge_hook.py", text)
         self.assertRegex(text, re.compile(r"one focused question", re.I))
+
+    def test_hook_declaration_uses_codex_wrapper_shape(self):
+        path = Path(__file__).parents[1] / "hooks" / "hooks.json"
+        declared = json.loads(path.read_text(encoding="utf-8"))
+        for event in ("SessionStart", "PreToolUse", "UserPromptSubmit", "PostToolUse", "Stop"):
+            with self.subTest(event=event):
+                entry = declared["hooks"][event][0]
+                self.assertEqual(len(entry["hooks"]), 1)
+                command = entry["hooks"][0]
+                self.assertEqual(command["type"], "command")
+                self.assertIn("${PLUGIN_ROOT}/hooks/forge_hook.py", command["command"])
 
 
 if __name__ == "__main__":

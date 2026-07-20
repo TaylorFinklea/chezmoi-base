@@ -2,32 +2,52 @@
   "hooks": {
     "SessionStart": [
       {
-        "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+          }
+        ]
       }
     ],
     "PreToolUse": [
       {
-        "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
       {
-        "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/forge_hook.py"
+          }
+        ]
       }
     ]
   }
