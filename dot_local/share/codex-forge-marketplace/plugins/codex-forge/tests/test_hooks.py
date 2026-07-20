@@ -98,7 +98,7 @@ class HookTests(unittest.TestCase):
                         f"{helper} question eyJxdWVzdGlvbiI6Im9uZSJ9;echo bad",
                         f"{helper} question $(echo bad)", f"{helper} question eyJxdWVzdGlvbiI6Im9uZSJ9 > /tmp/x",
                         f"{helper} --status", f"{helper} question --session-id model", "git status forge_hook.py",
-                        "ls codex-forge", "python forge_hook.py status", "codex-forge", "forge_hook.py"):
+                        "ls codex-forge", "python forge_hook.py status", "codex-forge", "forge_hook.py", helper):
             with self.subTest(command=command):
                 result = handle_hook(self.event("PreToolUse", tool_name="Bash",
                                                 tool_input={"command": command}), self.env)

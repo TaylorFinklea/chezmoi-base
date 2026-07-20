@@ -13,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from codex_forge import cli as cli_module
-from codex_forge.state import StateStore, transition
+from codex_forge.state import StateError, StateStore, transition
 
 
 PLUGIN = Path(__file__).parents[1]
@@ -176,6 +176,30 @@ class CLITests(unittest.TestCase):
         result, body = self.run_cli("freeze", BRIEF)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(body["status"], "frozen")
+
+    def test_freeze_reload_distinguishes_pre_and_post_publication_failures(self):
+        self.run_cli("begin")
+        original_replace = StateStore.replace
+        with mock.patch.object(StateStore, "replace", side_effect=StateError("before publication")):
+            with self.assertRaises(cli_module.CLIError) as failure:
+                self.invoke_cli("freeze", BRIEF)
+        self.assertEqual(failure.exception.code, "freeze_failed")
+        self.assertEqual(StateStore(self.data, "0.1.0").load(self.session).status, "shaping")
+        digest_name = hashlib.sha256(self.session.encode()).hexdigest()
+        self.assertFalse((self.data / f"brief-{digest_name}.json").exists())
+        self.assertFalse((self.data / f"approval-{digest_name}.json").exists())
+
+        def publish_then_raise(store, state):
+            original_replace(store, state)
+            raise StateError("directory fsync uncertain")
+
+        with mock.patch.object(StateStore, "replace", publish_then_raise):
+            result = self.invoke_cli("freeze", BRIEF)
+        self.assertEqual(result["status"], "frozen")
+        nonce = result["nonce"]
+        retry = self.invoke_cli("freeze", BRIEF)
+        self.assertEqual(retry["nonce"], nonce)
+        self.assertEqual(self.invoke_cli("status")["brief_digest"], result["brief_digest"])
 
     def test_rejects_identity_arguments_missing_env_bad_json_and_cwd(self):
         result = subprocess.run([str(CLI), "begin", "--session-id", "model"], cwd=self.cwd,

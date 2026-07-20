@@ -253,12 +253,33 @@ def question(argument: str) -> dict[str, Any]:
     return {"ok": True, "attempt": meta["question_count"]}
 
 
+def _published_freeze(state: ForgeState, root: Path, session: str, digest: str) -> dict[str, Any] | None:
+    if state.status != "frozen":
+        return None
+    brief = _read_record(root, "brief-", session)
+    approval = _read_record(root, "approval-", session)
+    if (not isinstance(brief, dict) or brief.get("digest") != digest or
+            not isinstance(approval, dict) or not isinstance(approval.get("nonce"), str) or
+            approval.get("session_id") != session):
+        return None
+    return {"ok": True, "status": "frozen", "brief_digest": digest,
+            "nonce": approval["nonce"], "expires_at": approval.get("expires_at")}
+
+
 def freeze(argument: str) -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session)
+    raw = _structured_json(argument)
+    try:
+        brief = parse_brief(raw)
+    except ValueError as exc:
+        raise CLIError("invalid_brief", str(exc)) from exc
+    digest = brief_digest(brief)
+    published = _published_freeze(state, root, session, digest)
+    if published is not None:
+        return published
     if state.status != "shaping":
         raise CLIError("invalid_transition", "only a shaping session can be frozen")
-    raw = _structured_json(argument)
     try:
         brief = parse_brief(raw)
     except ValueError as exc:
@@ -284,11 +305,20 @@ def freeze(argument: str) -> dict[str, Any]:
         frozen = transition(state, "freeze")
         _store(root).replace(frozen)
     except (CLIError, StateError, ValueError, OSError) as exc:
+        # replace() can fail after os.replace (directory fsync), so reload the
+        # state before deciding whether these records are safe to remove.
+        try:
+            observed = _store(root).load(session)
+        except (StateError, ValueError, OSError) as load_exc:
+            raise CLIError("freeze_recovery_required", "freeze publication could not be determined") from load_exc
+        recovered = _published_freeze(observed, root, session, digest) if observed is not None else None
+        if recovered is not None:
+            return recovered
+        if observed is not None and observed.status == "frozen":
+            raise CLIError("freeze_recovery_required", "frozen state has incomplete approval records") from exc
         try:
             _cleanup_freeze_records(root, session)
         except CLIError as cleanup_exc:
-            # Leave shaping state fail closed; a later freeze retries the same
-            # exact cleanup rather than treating the residue as a valid freeze.
             raise CLIError("freeze_recovery_required", "an interrupted freeze could not be recovered") from cleanup_exc
         raise CLIError("freeze_failed", "immutable brief and approval could not be persisted") from exc
     return {"ok": True, "status": "frozen", "brief_digest": digest, "nonce": nonce,

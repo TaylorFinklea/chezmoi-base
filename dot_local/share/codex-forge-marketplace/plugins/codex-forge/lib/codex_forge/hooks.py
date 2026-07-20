@@ -245,7 +245,7 @@ def _helper_command(command: Any, env: Any) -> bool:
         words = shlex.split(command, posix=True)
     except ValueError:
         return False
-    if not words or words[0] != str(helper) or words[1] not in _HELPER_SUBCOMMANDS:
+    if len(words) < 2 or words[0] != str(helper) or words[1] not in _HELPER_SUBCOMMANDS:
         return False
     if command != " ".join(words):
         return False
