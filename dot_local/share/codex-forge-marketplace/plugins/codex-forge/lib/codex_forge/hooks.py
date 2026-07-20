@@ -4,12 +4,15 @@ from dataclasses import dataclass
 from copy import deepcopy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import tempfile
 import time
+import tomllib
 from typing import Any, Mapping, Optional
 
 from .policy import classify_tool
@@ -22,6 +25,21 @@ INVALID_APPROVAL_REASON = (
     "Forge requires an exact approval command: approve <nonce> direct|ralph, "
     "revise <nonce>, or cancel <nonce>."
 )
+FORGE_SCOUT_INSTRUCTIONS = (
+    "Explore only the relevant files, command output, and local conventions. Return\n"
+    "concise findings with exact paths and evidence that help the parent decide or\n"
+    "implement. Do not edit files, alter git state, run deployments, or infer facts\n"
+    "that can be checked directly.\n"
+)
+FORGE_SCOUT_PROFILE = {
+    "name": "forge-scout",
+    "description": "Fast, read-only codebase and configuration reconnaissance.",
+    "model": "gpt-5.6-luna",
+    "model_reasoning_effort": "medium",
+    "sandbox_mode": "read-only",
+    "developer_instructions": FORGE_SCOUT_INSTRUCTIONS,
+}
+FORGE_SCOUT_PROFILE_MAX_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -134,6 +152,7 @@ def _load_state(event: Mapping[str, Any], env: Any) -> Any:
 
 
 def _helper_command(command: Any) -> bool:
+    """Recognize only a direct Forge helper invocation and its status grammar."""
     if not isinstance(command, str):
         return False
     try:
@@ -142,11 +161,38 @@ def _helper_command(command: Any) -> bool:
         return False
     if not words:
         return False
-    for word in words:
-        name = Path(word).name
-        if name in {"codex-forge", "forge_hook.py"}:
-            return word.endswith("codex-forge") or name == "forge_hook.py"
-    return False
+    executable = Path(words[0]).name
+    if executable not in {"codex-forge", "forge_hook.py"}:
+        return False
+    return words[1:] == ["status"]
+
+
+def _profile_path(env: Any) -> Path:
+    home = _env_value(env, "home", None)
+    if home is None:
+        home = _env_value(env, "HOME", None)
+    if home is None:
+        home = os.environ.get("HOME")
+    if not isinstance(home, str) or not home:
+        raise HookError("Forge scout profile is missing or invalid")
+    return Path(home) / ".codex" / "agents" / "forge-scout.toml"
+
+
+def _verify_forge_scout_profile(env: Any) -> None:
+    path = _profile_path(env)
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise HookError("Forge scout profile is missing or invalid")
+        if info.st_size > FORGE_SCOUT_PROFILE_MAX_BYTES:
+            raise HookError("Forge scout profile is missing or invalid")
+        payload = tomllib.loads(path.read_bytes().decode("utf-8"))
+    except HookError:
+        raise
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, TypeError, ValueError) as exc:
+        raise HookError("Forge scout profile is missing or invalid") from exc
+    if payload != FORGE_SCOUT_PROFILE:
+        raise HookError("Forge scout profile is missing or invalid")
 
 
 def _inject_helper_input(tool_input: Any, event: Mapping[str, Any], env: Any) -> Optional[dict[str, Any]]:
@@ -192,12 +238,11 @@ def _approval_matches(record: Mapping[str, Any], state: Any, event: Mapping[str,
     if record.get("repo") != repo:
         return False
     expires = record.get("expires_at")
-    try:
-        if isinstance(expires, str):
-            expires = float(expires)
-        if float(expires) <= now:
-            return False
-    except (TypeError, ValueError):
+    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+        return False
+    if not math.isfinite(expires) or not math.isfinite(now):
+        return False
+    if expires <= now:
         return False
     return True
 
@@ -214,6 +259,7 @@ def _handle_session_start(event: Mapping[str, Any], env: Any) -> HookResult:
     cwd = event.get("cwd")
     if session_id is None or not isinstance(cwd, str):
         raise HookError("SessionStart requires session_id and cwd")
+    _verify_forge_scout_profile(env)
     _write_json(_data_root(env), _hashed_name("heartbeat-", session_id), {
         "plugin_version": PLUGIN_VERSION,
         "session_id": session_id,
@@ -226,16 +272,26 @@ def _handle_session_start(event: Mapping[str, Any], env: Any) -> HookResult:
 
 def _handle_pre_tool(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
-    decision = classify_tool(event.get("tool_name", ""), event.get("tool_input", {}), state)
+    tool_name = event.get("tool_name", "")
+    decision = classify_tool(tool_name, event.get("tool_input", {}), state)
     if decision.deny:
+        tool_name_lower = tool_name.lower() if isinstance(tool_name, str) else ""
         return HookResult(_hook_output(
             "PreToolUse", permissionDecision="deny",
             permissionDecisionReason=(
                 "Forge shaping blocks writer tools until nonce approval."
-                if "writer" in decision.reason or "writer" in event.get("tool_name", "").lower()
+                if "writer" in decision.reason or "writer" in tool_name_lower
                 else decision.reason
             ),
         ), blocked=True)
+    canonical = tool_name.rsplit(".", 1)[-1] if isinstance(tool_name, str) else ""
+    if canonical in {"Agent", "spawn_agent", "SpawnAgent", "agent"}:
+        try:
+            _verify_forge_scout_profile(env)
+        except HookError as exc:
+            return HookResult(_hook_output(
+                "PreToolUse", permissionDecision="deny", permissionDecisionReason=str(exc)
+            ), exit_code=2, blocked=True)
     updated = _inject_helper_input(event.get("tool_input"), event, env)
     if updated is not None:
         return HookResult(_hook_output("PreToolUse", updatedInput=updated))
@@ -260,17 +316,20 @@ def _handle_prompt(event: Mapping[str, Any], env: Any) -> HookResult:
         return _block_prompt()
     if action != "approve" and dispatcher is not None:
         return _block_prompt()
-    if action == "approve":
-        next_state = transition(state, "approve_direct" if dispatcher == "direct" else "approve_ralph")
-    elif action == "revise":
-        next_state = transition(state, "revise")
-    else:
-        next_state = transition(state, "cancel")
-    _store(env).replace(next_state)
     record = dict(record)
     record["used"] = True
     record["used_at"] = _now(env)
     _write_json(_data_root(env), _hashed_name("approval-", state.session_id), record)
+    try:
+        if action == "approve":
+            next_state = transition(state, "approve_direct" if dispatcher == "direct" else "approve_ralph")
+        elif action == "revise":
+            next_state = transition(state, "revise")
+        else:
+            next_state = transition(state, "cancel")
+        _store(env).replace(next_state)
+    except Exception as exc:
+        raise HookError("Forge approval failed; nonce consumed and shaping remains locked") from exc
     return HookResult({})
 
 

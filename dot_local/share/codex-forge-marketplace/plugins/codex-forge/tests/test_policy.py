@@ -34,20 +34,28 @@ class PolicyTests(unittest.TestCase):
 
     def test_narrow_read_only_allowlist(self):
         for command in ("git status", "git log --oneline -3", "git diff --stat", "git show HEAD",
-                        "rg -n TODO .", "find . -name 'test_*.py'", "ls -la", "pytest --collect-only"):
+                        "rg -n TODO .", "find . -name 'test_*.py'", "ls -la"):
             with self.subTest(command=command):
                 self.assertTrue(is_read_only_shell(command))
                 self.assertTrue(classify_tool("Bash", {"command": command}, self.frozen).allowed)
 
     def test_agents_request_input_and_hosted_gaps(self):
         self.assertTrue(classify_tool("request_user_input", {}, self.state).allowed)
-        self.assertTrue(classify_tool("Agent", {"agent_type": "scout", "prompt": "inspect only"}, self.state).allowed)
+        self.assertTrue(classify_tool("Agent", {"agent_type": "forge-scout", "prompt": "inspect only"}, self.state).allowed)
+        self.assertTrue(classify_tool("Agent", {"agent_type": "forge-scout", "prompt": "overwrite all files"}, self.state).allowed)
+        self.assertFalse(classify_tool("Agent", {"agent_type": "scout", "prompt": "inspect only"}, self.state).allowed)
         self.assertFalse(classify_tool("Agent", {"prompt": "implement the change"}, self.state).allowed)
-        self.assertFalse(classify_tool("Agent", {"agent_type": "scout", "task": {"prompt": "write the report to disk"}}, self.state).allowed)
-        self.assertFalse(classify_tool("Agent", {"mode": "read-only", "metadata": [{"description": "edit files"}]}, self.state).allowed)
+        self.assertFalse(classify_tool("Agent", {"agent_type": "forge-scout", "task": {"prompt": "inspect"}}, self.state).allowed)
+        self.assertFalse(classify_tool("Agent", {"agent_type": "forge-scout", "sandbox_mode": "workspace-write"}, self.state).allowed)
+        self.assertFalse(classify_tool("Agent", {"mode": "read-only", "metadata": [{"description": "inspect files"}]}, self.state).allowed)
         self.assertTrue(classify_tool("computer", {"action": "screenshot"}, self.state).allowed)
         self.assertFalse(classify_tool("mcp__local__write", {}, self.state).allowed)
         self.assertFalse(classify_tool("unknown_local_tool", {}, self.state).allowed)
+
+    def test_pytest_and_py_test_are_not_shaping_allowlist_commands(self):
+        for command in ("pytest --collect-only", "py.test --collect-only", "pytest", "py.test"):
+            with self.subTest(command=command):
+                self.assertFalse(is_read_only_shell(command))
 
     def test_allowlist_rejects_paths_wrappers_and_mutating_find_or_git_options(self):
         rejected = (

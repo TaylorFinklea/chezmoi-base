@@ -10,10 +10,6 @@ SHAPING_STATUSES = frozenset(("shaping", "frozen"))
 WRITER_TOOLS = frozenset(("apply_patch", "Edit", "Write", "write_file", "file_write"))
 CONTROL_SYNTAX = re.compile(r"(?:[;&|<>`]|\$\(|\$\{|\n|\r)")
 MCP_NAMESPACE = re.compile(r"(?i)(?:^|[._:/\\-])mcp(?:$|[._:/\\-])")
-WRITER_INTENT = re.compile(
-    r"\b(?:write|writ(?:e|es|ing)|edit|modify|mutat(?:e|es|ing)|implement|patch|create|delete|remove|save|commit|rename|move|install|apply)\w*\b",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -35,32 +31,15 @@ class PolicyDecision:
         return "allow" if self.allowed else "deny"
 
 
-def _walk_values(value: Any):
-    if isinstance(value, dict):
-        for key, child in value.items():
-            yield str(key)
-            yield from _walk_values(child)
-    elif isinstance(value, (list, tuple)):
-        for child in value:
-            yield from _walk_values(child)
-    elif isinstance(value, str):
-        yield value
-    elif isinstance(value, bool):
-        yield "true" if value else "false"
-
-
-def _is_read_only_agent(value: Any) -> bool:
+def _is_forge_scout(value: Any) -> bool:
+    """Accept only the exact managed profile invocation, without prompt filtering."""
     if not isinstance(value, dict):
         return False
-    metadata = []
-    for key in ("mode", "agent_type", "role", "kind"):
-        candidate = value.get(key)
-        if isinstance(candidate, str):
-            metadata.append(candidate.lower())
-    read_markers = {"read", "readonly", "read-only", "scout", "explore", "explorer", "reader"}
-    if not any(marker in read_markers for marker in metadata):
+    if set(value) - {"agent_type", "prompt"}:
         return False
-    return not any(WRITER_INTENT.search(text) for text in _walk_values(value))
+    if value.get("agent_type") != "forge-scout":
+        return False
+    return "prompt" not in value or isinstance(value["prompt"], str)
 
 
 def _safe_git(words: list[str]) -> bool:
@@ -195,9 +174,6 @@ def _shell_allowed(command: Any) -> bool:
         return len(words) > 1 and all(re.fullmatch(r"[A-Za-z0-9_.+-]+", word) for word in words[1:])
     if program == "codex-forge":
         return words[1:] == ["status"]
-    if program in {"pytest", "py.test"}:
-        safe = {"--collect-only", "-q", "--quiet", "-v", "--verbose"}
-        return words[1:].count("--collect-only") == 1 and all(arg in safe or not arg.startswith("-") for arg in words[1:])
     return False
 
 
@@ -236,9 +212,9 @@ def classify_tool(tool_name: str, tool_input: Any, state: Any) -> PolicyDecision
     if canonical.lower() in {"browser", "computer", "web_search", "websearch"}:
         return PolicyDecision(True, "hosted tool is outside the Forge hook path")
     if canonical in {"Agent", "spawn_agent", "SpawnAgent", "agent"}:
-        if _is_read_only_agent(tool_input):
-            return PolicyDecision(True, "read-only scout agent is permitted during shaping")
-        return PolicyDecision(False, "Forge shaping blocks writer or mixed-mode agents until nonce approval.")
+        if _is_forge_scout(tool_input):
+            return PolicyDecision(True, "managed forge-scout agent is permitted during shaping")
+        return PolicyDecision(False, "Forge shaping blocks non-managed or mixed-mode agents until nonce approval.")
     if canonical == "Bash" or tool_name in {"Bash", "shell", "Shell"}:
         if _shell_allowed(_tool_input_command(tool_input)):
             return PolicyDecision(True, "read-only shell command is permitted during shaping")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
-from codex_forge.hooks import PLUGIN_VERSION, handle_hook
+from codex_forge.hooks import FORGE_SCOUT_INSTRUCTIONS, PLUGIN_VERSION, handle_hook
 from codex_forge.state import StateStore, transition
 
 
@@ -20,9 +20,22 @@ class HookTests(unittest.TestCase):
         self.data = self.root / "data"
         self.cwd = self.root / "repo"
         self.cwd.mkdir()
+        self.home = self.root / "home"
+        self.profile = self.home / ".codex" / "agents" / "forge-scout.toml"
+        self.profile.parent.mkdir(parents=True)
+        self.profile.write_text(
+            'name = "forge-scout"\n'
+            'description = "Fast, read-only codebase and configuration reconnaissance."\n'
+            'model = "gpt-5.6-luna"\n'
+            'model_reasoning_effort = "medium"\n'
+            'sandbox_mode = "read-only"\n'
+            'developer_instructions = """\n'
+            + FORGE_SCOUT_INSTRUCTIONS
+            + '"""\n'
+        )
         self.session = "hook-session"
-        self.env = {"data_root": self.data, "now": 1000.0}
         self.store = StateStore(self.data, PLUGIN_VERSION)
+        self.env = {"data_root": self.data, "now": 1000.0, "HOME": str(self.home), "store": self.store}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -58,6 +71,12 @@ class HookTests(unittest.TestCase):
         untouched = handle_hook(self.event("PreToolUse", tool_name="Bash",
                                            tool_input={"command": "git status"}), self.env)
         self.assertEqual(untouched.output, {})
+        for command in ("git status forge_hook.py", "ls codex-forge", "python forge_hook.py status",
+                        "codex-forge status extra", "codex-forge", "forge_hook.py"):
+            with self.subTest(command=command):
+                result = handle_hook(self.event("PreToolUse", tool_name="Bash",
+                                                tool_input={"command": command}), self.env)
+                self.assertNotIn("updatedInput", result.output.get("hookSpecificOutput", {}))
 
     def _freeze_with_nonce(self, nonce="abc123"):
         existing = self.store.load(self.session)
@@ -84,6 +103,22 @@ class HookTests(unittest.TestCase):
         self.assertEqual(approved.output, {})
         self.assertEqual(self.store.load(self.session).status, "approved_direct")
 
+    def test_approval_consumes_nonce_before_state_persistence_failure(self):
+        self._freeze_with_nonce()
+        original_replace = self.store.replace
+        def fail_replace(state):
+            raise OSError("injected persistence failure")
+        self.store.replace = fail_replace
+        result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+        self.assertEqual(result.exit_code, 2)
+        self.assertTrue(result.blocked)
+        self.assertEqual(self.store.load(self.session).status, "frozen")
+        approval = self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+        self.assertTrue(json.loads(approval.read_text())["used"])
+        self.store.replace = original_replace
+        replay = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+        self.assertEqual(replay.output["decision"], "block")
+
     def test_user_prompt_rejects_stale_or_replayed_nonce(self):
         self._freeze_with_nonce()
         self.env["now"] = 1400.0
@@ -98,6 +133,47 @@ class HookTests(unittest.TestCase):
         self.store.replace(ForgeState(state.session_id, state.cwd, state.repo, "frozen", state.schema_version, state.plugin_version))
         replay = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
         self.assertEqual(replay.output["decision"], "block")
+
+    def test_user_prompt_rejects_nonfinite_and_boolean_expiry(self):
+        for expiry in (float("nan"), float("inf"), float("-inf"), True, False):
+            with self.subTest(expiry=expiry):
+                self._freeze_with_nonce()
+                approval = self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+                payload = json.loads(approval.read_text())
+                payload["expires_at"] = expiry
+                approval.write_text(json.dumps(payload))
+                result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+                self.assertEqual(result.output["decision"], "block")
+
+    def test_profile_is_verified_before_heartbeat_and_agent_start(self):
+        self.profile.write_text(self.profile.read_text().replace('sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'))
+        result = handle_hook(self.event("SessionStart", source="startup", reason="startup"), self.env)
+        self.assertEqual(result.exit_code, 2)
+        self.assertEqual(list(self.data.glob("*")) if self.data.exists() else [], [])
+        self.store.create(self.session, self.cwd, None)
+        result = handle_hook(self.event("PreToolUse", tool_name="Agent",
+                                        tool_input={"agent_type": "forge-scout", "prompt": "inspect"}), self.env)
+        self.assertEqual(result.exit_code, 2)
+        self.assertTrue(result.blocked)
+
+    def test_profile_must_be_regular_non_symlink(self):
+        target = self.root / "profile-target.toml"
+        target.write_text(self.profile.read_text())
+        self.profile.unlink()
+        self.profile.symlink_to(target)
+        result = handle_hook(self.event("SessionStart", source="startup", reason="startup"), self.env)
+        self.assertEqual(result.exit_code, 2)
+
+    def test_malformed_tool_name_returns_fail_closed_output(self):
+        self.store.create(self.session, self.cwd, None)
+        for tool_name in (None, [], {}, 7):
+            with self.subTest(tool_name=tool_name):
+                result = handle_hook(self.event("PreToolUse", tool_name=tool_name, tool_input={}), self.env)
+                self.assertEqual(result.output, {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                    "permissionDecisionReason": "Forge shaping denies unknown tools."
+                }})
+                self.assertTrue(result.blocked)
 
     def test_post_tool_is_noop_and_stop_continuation_is_bounded(self):
         state = self.store.create(self.session, self.cwd, None)
