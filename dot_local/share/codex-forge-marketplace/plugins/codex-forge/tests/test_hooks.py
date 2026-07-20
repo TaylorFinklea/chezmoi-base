@@ -66,17 +66,17 @@ class HookTests(unittest.TestCase):
             "hookEventName": "PreToolUse", "permissionDecision": "deny",
             "permissionDecisionReason": "Forge shaping blocks writer tools until nonce approval."
         }})
-        helper = str(self.plugin_root / "hooks" / "forge_hook.py")
+        helper = str(self.plugin_root / "bin" / "codex-forge")
         allowed = handle_hook(self.event("PreToolUse", tool_name="Bash",
-                                          tool_input={"command": f"python3 {helper} status"}), self.env)
+                                          tool_input={"command": f"{helper} status"}), self.env)
         updated = allowed.output["hookSpecificOutput"]["updatedInput"]
         self.assertEqual(updated["env"], {"CODEX_FORGE_DATA": str(self.data), "CODEX_FORGE_SESSION_ID": self.session})
         untouched = handle_hook(self.event("PreToolUse", tool_name="Bash",
                                            tool_input={"command": "git status"}), self.env)
         self.assertEqual(untouched.output, {})
         for command in ("codex-forge status", "forge_hook.py status", "hooks/forge_hook.py status",
-                        "/tmp/forge_hook.py status", f"{helper} status", f"python3 {helper} status extra",
-                        f"python3 {helper} --status", "git status forge_hook.py", "ls codex-forge",
+                        "/tmp/forge_hook.py status", f"python3 {helper} status", f"{helper} status extra",
+                        f"{helper} --status", "git status forge_hook.py", "ls codex-forge",
                         "python forge_hook.py status", "codex-forge", "forge_hook.py"):
             with self.subTest(command=command):
                 result = handle_hook(self.event("PreToolUse", tool_name="Bash",
@@ -85,7 +85,7 @@ class HookTests(unittest.TestCase):
 
     def test_bash_environment_bypass_is_denied_before_helper_injection(self):
         self.store.create(self.session, self.cwd, None)
-        helper = str(self.plugin_root / "hooks" / "forge_hook.py")
+        helper = str(self.plugin_root / "bin" / "codex-forge")
         cases = (
             ("git status", {"PATH": "/tmp"}),
             ("git status", {"PYTHONPATH": "/tmp"}),

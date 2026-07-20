@@ -179,8 +179,6 @@ def _shell_allowed(command: Any) -> bool:
         return len(words) == 1
     if program == "which":
         return len(words) > 1 and all(re.fullmatch(r"[A-Za-z0-9_.+-]+", word) for word in words[1:])
-    if program == "codex-forge":
-        return words[1:] == ["status"]
     if program == "python3":
         return len(words) == 3 and re.fullmatch(r"/.+/hooks/forge_hook\.py", words[1]) is not None and words[2] == "status"
     return False

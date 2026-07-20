@@ -15,7 +15,7 @@ import time
 import tomllib
 from typing import Any, Mapping, Optional
 
-from .policy import classify_tool
+from .policy import PolicyDecision, _has_agent_environment, _tool_input_command, classify_tool
 from .state import SecureJSONRecordStore, StateError, StateStore, transition
 
 PLUGIN_VERSION = "0.1.0"
@@ -204,15 +204,16 @@ def _helper_path(env: Any) -> Optional[Path]:
     try:
         root_info = root_path.lstat()
         root = root_path.resolve(strict=True)
-        hooks_dir = root / "hooks"
-        hooks_info = hooks_dir.lstat()
-        helper = hooks_dir / "forge_hook.py"
+        bin_dir = root / "bin"
+        bin_info = bin_dir.lstat()
+        helper = bin_dir / "codex-forge"
         helper_info = helper.lstat()
     except OSError:
         return None
     if (root != root_path or stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode) or
-            stat.S_ISLNK(hooks_info.st_mode) or not stat.S_ISDIR(hooks_info.st_mode) or
-            stat.S_ISLNK(helper_info.st_mode) or not stat.S_ISREG(helper_info.st_mode)):
+            stat.S_ISLNK(bin_info.st_mode) or not stat.S_ISDIR(bin_info.st_mode) or
+            stat.S_ISLNK(helper_info.st_mode) or not stat.S_ISREG(helper_info.st_mode) or
+            not (helper_info.st_mode & stat.S_IXUSR)):
         return None
     return helper
 
@@ -228,7 +229,7 @@ def _helper_command(command: Any, env: Any) -> bool:
         words = shlex.split(command, posix=True)
     except ValueError:
         return False
-    return words == ["python3", str(helper), "status"]
+    return words == [str(helper), "status"]
 
 
 def _profile_path(env: Any) -> Path:
@@ -342,7 +343,12 @@ def _handle_session_start(event: Mapping[str, Any], env: Any) -> HookResult:
 def _handle_pre_tool(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
     tool_name = event.get("tool_name", "")
-    decision = classify_tool(tool_name, event.get("tool_input", {}), state)
+    if tool_name == "Bash" and _has_agent_environment(event.get("tool_input")):
+        decision = PolicyDecision(False, "Forge shaping blocks agent-supplied Bash execution environment.")
+    elif tool_name == "Bash" and _helper_command(_tool_input_command(event.get("tool_input")), env):
+        decision = PolicyDecision(True, "managed Forge control CLI is permitted during shaping")
+    else:
+        decision = classify_tool(tool_name, event.get("tool_input", {}), state)
     if decision.allowed and tool_name == "Bash":
         updated = _inject_helper_input(event.get("tool_input"), event, env)
         if updated is not None:

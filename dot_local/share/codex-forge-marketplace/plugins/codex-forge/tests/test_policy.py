@@ -109,7 +109,7 @@ class PolicyTests(unittest.TestCase):
                 self.assertFalse(classify_tool(name, {"command": "git status"}, self.state).allowed)
 
     def test_bash_execution_environment_fields_are_denied_during_shaping(self):
-        commands = ("git status", "git log --oneline -3 --no-textconv", "codex-forge status")
+        commands = ("git status", "git log --oneline -3 --no-textconv")
         fields = ("cwd", "workdir", "working_directory", "shell", "executable", "timeout", "timeout_ms")
         for command in commands:
             for field in fields:
