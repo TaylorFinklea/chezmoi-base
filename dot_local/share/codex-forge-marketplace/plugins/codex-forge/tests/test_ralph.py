@@ -341,20 +341,74 @@ class RalphTests(unittest.TestCase):
         self.assertNotEqual(subprocess.check_output(
             ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
 
-    def test_ack_loss_is_recovery_required_and_never_rewinds_git(self):
-        child = FakePopen(running=True)
-        identity = ProcessIdentity(child.pid, "started", child.pid, "a" * 64)
-        callbacks = {"spawn": False, "abort": False}
-        def on_spawn(_launch):
-            callbacks["spawn"] = True
-        def on_abort():
-            callbacks["abort"] = True
-        with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
-             mock.patch.object(ralph_module, "_identity", return_value=identity):
+    def test_ack_loss_real_child_attests_arm_and_is_reaped_without_git_rewind(self):
+        attestation = self.root / "arm-attestation"
+        script = (
+            "import os, pathlib, sys, time\n"
+            "fd = int(sys.argv[1])\n"
+            "path = pathlib.Path(sys.argv[2])\n"
+            "value = os.read(fd, 1)\n"
+            "if value != b'A':\n"
+            "    path.write_bytes(b'wrong:' + value)\n"
+            "    raise SystemExit(91)\n"
+            "tmp = path.with_suffix('.tmp')\n"
+            "with open(tmp, 'wb') as stream:\n"
+            "    stream.write(value)\n"
+            "    stream.flush()\n"
+            "    os.fsync(stream.fileno())\n"
+            "os.replace(tmp, path)\n"
+            "directory = os.open(str(path.parent), os.O_RDONLY)\n"
+            "os.fsync(directory)\n"
+            "os.close(directory)\n"
+            "time.sleep(0.5)\n"
+        )
+        parent_fds = []
+        child_pids = []
+        real_launch_pipes = ralph_module._launch_pipes
+
+        def launch_pipes():
+            pipes = real_launch_pipes()
+            parent_fds.extend(pipes)
+            return pipes
+
+        def spawn_backend(cwd, marker, _data_root, _launch_id, *, arm_read_fd,
+                          acknowledgement_write_fd):
+            environment = dict(os.environ)
+            environment[ralph_module.OWNERSHIP_MARKER_ENV] = marker
+            child = subprocess.Popen(
+                [sys.executable, "-c", script, str(arm_read_fd), str(attestation)],
+                cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True, env=environment,
+                close_fds=True, pass_fds=(arm_read_fd, acknowledgement_write_fd),
+            )
+            child_pids.append(child.pid)
+            return child
+
+        with mock.patch.object(ralph_module, "_launch_pipes", side_effect=launch_pipes), \
+             mock.patch.object(ralph_module, "_spawn_backend", side_effect=spawn_backend), \
+             mock.patch.object(ralph_module, "ACK_WAIT_TIMEOUT_SECONDS", 0.1):
             with self.assertRaises(ralph_module.RalphLaunchRecoveryError):
-                self.launch(self.prepare(), on_spawn=on_spawn, on_abort=on_abort)
-        self.assertTrue(callbacks["spawn"])
-        self.assertFalse(callbacks["abort"])
+                self.launch(self.prepare())
+
+        deadline = time.monotonic() + 1
+        while not attestation.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(attestation.read_bytes(), b"A")
+        self.assertEqual(len(child_pids), 1)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pids[0], 0)
+            except ProcessLookupError:
+                break
+            except PermissionError:
+                self.fail("ACK-loss child remains live")
+            time.sleep(0.02)
+        else:
+            self.fail("ACK-loss child remained live or zombie after detached reaper deadline")
+        for fd in parent_fds:
+            with self.subTest(fd=fd), self.assertRaises(OSError):
+                os.fstat(fd)
         self.assertNotEqual(subprocess.check_output(
             ["git", "log", "-1", "--format=%s"], cwd=self.repo, text=True).strip(), "baseline")
 
