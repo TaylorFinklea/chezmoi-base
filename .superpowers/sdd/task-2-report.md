@@ -77,3 +77,28 @@ Added focused failing tests before implementation; the required suite initially 
 - Added static pre-existing symlink-root regression coverage for `StateStore.create` and `StateStore.replace`; existing `load`/`delete` coverage remains.
 - `python3 -m unittest discover -s dot_local/share/codex-forge-marketplace/plugins/codex-forge/tests -p 'test_*.py' -v` — passed; 19 tests, all OK.
 - `git diff --check` — passed.
+
+### Final in-scope review fixes
+
+Status: DONE
+
+#### RED cases
+
+Added focused tests for static hostile ancestors, persisted field types, and atomic replacement publication. Before implementation, the focused state command failed with 6 failures and 4 errors across 17 tests: a symlink ancestor was followed, a file ancestor leaked `NotADirectoryError`, and `RepoIdentity.head=True` was accepted for persistence. The successful replacement/failed publication test was already green against the existing atomic implementation and was retained as regression coverage.
+
+#### Implementation
+
+- Every existing `data_root` ancestor is inspected lexically with `lstat`; symlinks and non-directories fail closed for create/load/replace/delete. Missing trailing components remain creatable.
+- Persisted state validation now rejects invalid `ForgeState`/`RepoIdentity` field types and values before JSON serialization, including bool schema versions and bool/non-string repository heads.
+- Atomic replacement coverage proves one valid final record with no temporary artifacts and verifies publication failure preserves prior readable content.
+
+#### Verification
+
+- `python3 -m unittest discover -s dot_local/share/codex-forge-marketplace/plugins/codex-forge/tests -p 'test_*.py' -v` — passed; 22 tests, all OK.
+- `git diff --check` — passed.
+
+#### Self-review
+
+- Scope remains Task 2 state implementation/tests plus this report; no Task 3+ files, HOME, pushes, or malicious concurrent-race hardening were added.
+- Existing platform alias paths are avoided in tests by canonicalizing temporary test roots; production validation remains strict for every lexical ancestor.
+- No blockers or residual in-scope concerns identified.

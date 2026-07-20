@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
@@ -18,9 +19,10 @@ _MAX_RECORD_BYTES = 10 * 1024 * 1024
 class StateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name) / "state"
+        self.tmp_path = Path(self.tmp.name).resolve()
+        self.root = self.tmp_path / "state"
         self.store = StateStore(self.root, "0.1.0")
-        self.cwd = Path(self.tmp.name) / "repo"
+        self.cwd = self.tmp_path / "repo"
         self.cwd.mkdir()
         self.repo = RepoIdentity(self.cwd, "abc123")
 
@@ -96,7 +98,7 @@ class StateTests(unittest.TestCase):
         wrong_plugin = ForgeState("s", replacement.cwd, None, "frozen", 1, "9.9.9")
         with self.assertRaises(StateError):
             self.store.replace(wrong_plugin)
-        invalid_cwd = ForgeState("s", Path(self.tmp.name) / "missing", None, "frozen", 1, "0.1.0")
+        invalid_cwd = ForgeState("s", self.tmp_path / "missing", None, "frozen", 1, "0.1.0")
         with self.assertRaises(StateError):
             self.store.replace(invalid_cwd)
 
@@ -119,7 +121,7 @@ class StateTests(unittest.TestCase):
 
     def test_root_symlink_is_rejected_by_load_and_delete(self):
         self.store.create("s", self.cwd, None)
-        real_root = Path(self.tmp.name) / "real-state"
+        real_root = self.tmp_path / "real-state"
         self.root.rename(real_root)
         self.root.symlink_to(real_root, target_is_directory=True)
         for operation in (self.store.load, self.store.delete):
@@ -127,7 +129,7 @@ class StateTests(unittest.TestCase):
                 operation("s")
 
     def test_root_symlink_is_rejected_by_create(self):
-        real_root = Path(self.tmp.name) / "real-state"
+        real_root = self.tmp_path / "real-state"
         real_root.mkdir()
         self.root.symlink_to(real_root, target_is_directory=True)
         with self.assertRaises(StateError):
@@ -137,12 +139,73 @@ class StateTests(unittest.TestCase):
     def test_root_symlink_is_rejected_by_replace(self):
         state = self.store.create("s", self.cwd, None)
         replacement = transition(state, "freeze")
-        real_root = Path(self.tmp.name) / "real-state"
+        real_root = self.tmp_path / "real-state"
         self.root.rename(real_root)
         self.root.symlink_to(real_root, target_is_directory=True)
         with self.assertRaises(StateError):
             self.store.replace(replacement)
         self.assertEqual(StateStore(real_root, "0.1.0").load("s"), state)
+
+    def test_existing_data_root_symlink_or_file_ancestors_are_rejected(self):
+        real_parent = self.tmp_path / "real-parent"
+        real_parent.mkdir()
+        real_root = real_parent / "state"
+        real_store = StateStore(real_root, "0.1.0")
+        state = real_store.create("s", self.cwd, None)
+        replacement = transition(state, "freeze")
+
+        symlink_parent = self.tmp_path / "symlink-parent"
+        symlink_parent.symlink_to(real_parent, target_is_directory=True)
+        symlink_store = StateStore(symlink_parent / "state", "0.1.0")
+        file_parent = self.tmp_path / "file-parent"
+        file_parent.write_text("not a directory")
+        file_store = StateStore(file_parent / "state", "0.1.0")
+
+        for store in (symlink_store, file_store):
+            for operation in (
+                lambda: store.create("new", self.cwd, None),
+                lambda: store.load("s"),
+                lambda: store.replace(replacement),
+                lambda: store.delete("s"),
+            ):
+                with self.subTest(store=store.data_root, operation=operation):
+                    with self.assertRaises(StateError):
+                        operation()
+        self.assertEqual(real_store.load("s"), state)
+
+    def test_persisted_field_types_are_validated_before_serialization(self):
+        with self.assertRaises(ValueError):
+            self.store.create("bad-head", self.cwd, RepoIdentity(self.cwd, True))
+        with self.assertRaises(ValueError):
+            self.store.create("bad-head", self.cwd, RepoIdentity(self.cwd, 7))
+
+        state = self.store.create("s", self.cwd, None)
+        invalid_states = (
+            ForgeState("s", self.cwd, None, "shaping", True, "0.1.0"),
+            ForgeState("s", self.cwd, RepoIdentity(self.cwd, True), "shaping", 1, "0.1.0"),
+            ForgeState("s", self.cwd, object(), "shaping", 1, "0.1.0"),
+            ForgeState("s", str(self.cwd), None, "shaping", 1, "0.1.0"),
+            ForgeState("s", self.cwd, None, True, 1, "0.1.0"),
+            ForgeState("s", self.cwd, None, "shaping", 1, True),
+        )
+        for invalid in invalid_states:
+            with self.subTest(invalid=invalid), self.assertRaises(StateError):
+                self.store.replace(invalid)
+        self.assertEqual(self.store.load("s"), state)
+
+    def test_replace_success_has_one_final_record_and_failed_publication_preserves_it(self):
+        state = self.store.create("s", self.cwd, None)
+        replacement = transition(state, "freeze")
+        self.store.replace(replacement)
+        self.assertEqual(self.store.load("s"), replacement)
+        self.assertEqual([entry.name for entry in self.root.iterdir()], [self.store.path_for("s").name])
+
+        failed = transition(replacement, "approve_direct")
+        with mock.patch("codex_forge.state.os.replace", side_effect=OSError("publish failed")):
+            with self.assertRaises(StateError):
+                self.store.replace(failed)
+        self.assertEqual(self.store.load("s"), replacement)
+        self.assertEqual([entry.name for entry in self.root.iterdir()], [self.store.path_for("s").name])
 
     def test_loaded_and_replaced_bindings_must_be_real_directories(self):
         state = self.store.create("s", self.cwd, self.repo)
@@ -191,12 +254,12 @@ class StateTests(unittest.TestCase):
         self.assertEqual(results.count("rejected"), 7)
 
     def test_canonical_cwd_and_repository_binding(self):
-        link = Path(self.tmp.name) / "link"
+        link = self.tmp_path / "link"
         link.symlink_to(self.cwd, target_is_directory=True)
         state = self.store.create("s", link, self.repo)
         self.assertEqual(state.cwd, self.cwd.resolve())
         self.assertEqual(state.repo.root, self.cwd.resolve())
-        outside = Path(self.tmp.name) / "outside"
+        outside = self.tmp_path / "outside"
         outside.mkdir()
         with self.assertRaises(ValueError):
             self.store.create("bad", outside, self.repo)

@@ -84,9 +84,21 @@ def _canonical_directory(path: Path, field: str) -> Path:
     return result
 
 
+def _validate_repo_types(repo: RepoIdentity, error_type: type[Exception]) -> None:
+    if not isinstance(repo, RepoIdentity):
+        raise error_type("invalid repository identity")
+    if not isinstance(repo.root, Path):
+        raise error_type("invalid repository root")
+    if repo.head is not None and not isinstance(repo.head, str):
+        raise error_type("invalid repository head")
+    if repo.git_dir is not None and not isinstance(repo.git_dir, Path):
+        raise error_type("invalid git directory")
+
+
 def _repo_for_create(cwd: Path, repo: Optional[RepoIdentity]) -> Optional[RepoIdentity]:
     if repo is None:
         return None
+    _validate_repo_types(repo, ValueError)
     root = _canonical_directory(repo.root, "repository root")
     try:
         cwd.relative_to(root)
@@ -96,6 +108,21 @@ def _repo_for_create(cwd: Path, repo: Optional[RepoIdentity]) -> Optional[RepoId
     if repo.git_dir is not None:
         git_dir = _canonical_directory(repo.git_dir, "git directory")
     return RepoIdentity(root, repo.head, git_dir)
+
+
+def _validate_state_types(state: ForgeState, plugin_version: str) -> None:
+    if not isinstance(state.cwd, Path):
+        raise StateError("invalid cwd")
+    if type(state.schema_version) is not int or state.schema_version != SCHEMA_VERSION:
+        raise StateError("state schema or plugin mismatch")
+    if not isinstance(state.plugin_version, str) or not state.plugin_version:
+        raise StateError("state schema or plugin mismatch")
+    if state.plugin_version != plugin_version:
+        raise StateError("state schema or plugin mismatch")
+    if not isinstance(state.status, str) or state.status not in _STATUSES:
+        raise StateError("invalid state identity")
+    if state.repo is not None:
+        _validate_repo_types(state.repo, StateError)
 
 
 def _validate_bindings(cwd: Path, repo: Optional[RepoIdentity], error_type: type[Exception]) -> None:
@@ -184,7 +211,22 @@ class StateStore:
         if not isinstance(plugin_version, str) or not plugin_version:
             raise ValueError("plugin_version is required")
 
+    def _validate_data_root(self) -> None:
+        absolute_root = Path(os.path.abspath(self.data_root))
+        current = Path(absolute_root.anchor)
+        for component in absolute_root.parts[1:]:
+            current /= component
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                raise StateError("state root has an inaccessible ancestor") from exc
+            if stat_is_symlink(info) or not stat_is_directory(info):
+                raise StateError("state root ancestors must be non-symlink directories")
+
     def _root_exists(self) -> bool:
+        self._validate_data_root()
         try:
             info = self.data_root.lstat()
         except FileNotFoundError:
@@ -216,6 +258,7 @@ class StateStore:
             raise StateError("state record must be a regular file")
 
     def load(self, session_id: str) -> Optional[ForgeState]:
+        self._validate_data_root()
         path = self.path_for(session_id)
         if not self._root_exists():
             return None
@@ -250,6 +293,7 @@ class StateStore:
         return state
 
     def create(self, session_id: str, cwd: Path, repo: Optional[RepoIdentity]) -> ForgeState:
+        self._validate_data_root()
         _valid_session_id(session_id)
         canonical_cwd = _canonical_directory(cwd, "cwd")
         canonical_repo = _repo_for_create(canonical_cwd, repo)
@@ -259,18 +303,17 @@ class StateStore:
         return state
 
     def replace(self, state: ForgeState) -> None:
+        self._validate_data_root()
         if not isinstance(state, ForgeState):
             raise TypeError("expected ForgeState")
         _valid_session_id(state.session_id)
-        if state.schema_version != SCHEMA_VERSION or state.plugin_version != self.plugin_version:
-            raise StateError("state schema or plugin mismatch")
-        if state.status not in _STATUSES:
-            raise StateError("invalid state identity")
-        _validate_bindings(Path(state.cwd), state.repo, StateError)
+        _validate_state_types(state, self.plugin_version)
+        _validate_bindings(state.cwd, state.repo, StateError)
         self._ensure_root()
         self._persist(state, exclusive=False)
 
     def _persist(self, state: ForgeState, exclusive: bool) -> None:
+        _validate_state_types(state, self.plugin_version)
         path = self.path_for(state.session_id)
         self._check_record(path)
         payload = json.dumps(_state_payload(state), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -304,6 +347,7 @@ class StateStore:
             raise StateError("could not atomically persist state") from exc
 
     def delete(self, session_id: str) -> None:
+        self._validate_data_root()
         path = self.path_for(session_id)
         if not self._root_exists():
             return
