@@ -23,6 +23,7 @@ class HookTests(unittest.TestCase):
         self.home = self.root / "home"
         self.profile = self.home / ".codex" / "agents" / "forge-scout.toml"
         self.profile.parent.mkdir(parents=True)
+        self.plugin_root = Path(__file__).parents[1].resolve()
         self.profile.write_text(
             'name = "forge-scout"\n'
             'description = "Fast, read-only codebase and configuration reconnaissance."\n'
@@ -35,7 +36,8 @@ class HookTests(unittest.TestCase):
         )
         self.session = "hook-session"
         self.store = StateStore(self.data, PLUGIN_VERSION)
-        self.env = {"data_root": self.data, "now": 1000.0, "HOME": str(self.home), "store": self.store}
+        self.env = {"data_root": self.data, "now": 1000.0, "HOME": str(self.home),
+                    "PLUGIN_ROOT": str(self.plugin_root), "store": self.store}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -64,15 +66,18 @@ class HookTests(unittest.TestCase):
             "hookEventName": "PreToolUse", "permissionDecision": "deny",
             "permissionDecisionReason": "Forge shaping blocks writer tools until nonce approval."
         }})
+        helper = str(self.plugin_root / "hooks" / "forge_hook.py")
         allowed = handle_hook(self.event("PreToolUse", tool_name="Bash",
-                                          tool_input={"command": "codex-forge status"}), self.env)
+                                          tool_input={"command": f"python3 {helper} status"}), self.env)
         updated = allowed.output["hookSpecificOutput"]["updatedInput"]
         self.assertEqual(updated["env"], {"CODEX_FORGE_DATA": str(self.data), "CODEX_FORGE_SESSION_ID": self.session})
         untouched = handle_hook(self.event("PreToolUse", tool_name="Bash",
                                            tool_input={"command": "git status"}), self.env)
         self.assertEqual(untouched.output, {})
-        for command in ("git status forge_hook.py", "ls codex-forge", "python forge_hook.py status",
-                        "codex-forge status extra", "codex-forge", "forge_hook.py"):
+        for command in ("codex-forge status", "forge_hook.py status", "hooks/forge_hook.py status",
+                        "/tmp/forge_hook.py status", f"{helper} status", f"python3 {helper} status extra",
+                        f"python3 {helper} --status", "git status forge_hook.py", "ls codex-forge",
+                        "python forge_hook.py status", "codex-forge", "forge_hook.py"):
             with self.subTest(command=command):
                 result = handle_hook(self.event("PreToolUse", tool_name="Bash",
                                                 tool_input={"command": command}), self.env)
@@ -91,7 +96,7 @@ class HookTests(unittest.TestCase):
         self.data.mkdir(mode=0o700, exist_ok=True)
         approval.write_text(json.dumps({"nonce": nonce, "session_id": self.session,
                                         "cwd": str(self.cwd), "repo": None,
-                                        "expires_at": 1300.0, "used": False}))
+                                        "issued_at": 1000.0, "expires_at": 2800.0, "used": False}))
         return nonce
 
     def test_invalid_prompt_is_exact_block_and_valid_nonce_is_session_bound(self):
@@ -121,7 +126,7 @@ class HookTests(unittest.TestCase):
 
     def test_user_prompt_rejects_stale_or_replayed_nonce(self):
         self._freeze_with_nonce()
-        self.env["now"] = 1400.0
+        self.env["now"] = 2900.0
         stale = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
         self.assertEqual(stale.output["decision"], "block")
         self.env["now"] = 1000.0
@@ -144,6 +149,47 @@ class HookTests(unittest.TestCase):
                 approval.write_text(json.dumps(payload))
                 result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
                 self.assertEqual(result.output["decision"], "block")
+
+    def test_approval_requires_exact_thirty_minute_schema_and_reasonable_issue_time(self):
+        for mutate in (
+            lambda p: p.update({"issued_at": 1001.0}),
+            lambda p: p.update({"expires_at": 2801.0}),
+            lambda p: p.update({"issued_at": 1000.0, "expires_at": 2801.0}),
+            lambda p: p.update({"issued_at": True}),
+            lambda p: p.update({"used": 0}),
+            lambda p: p.update({"unexpected": 1}),
+            lambda p: p.update({"issued_at": 1601.0, "expires_at": 3401.0}),
+        ):
+            with self.subTest(mutate=mutate):
+                self._freeze_with_nonce()
+                approval = self.data / ("approval-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+                payload = json.loads(approval.read_text())
+                mutate(payload)
+                approval.write_text(json.dumps(payload))
+                result = handle_hook(self.event("UserPromptSubmit", prompt="approve abc123 direct"), self.env)
+                self.assertTrue(result.blocked)
+                self.assertEqual(result.output["decision"], "block")
+
+    def test_malformed_heartbeat_record_fails_closed_instead_of_overwriting(self):
+        self.data.mkdir(mode=0o700)
+        heartbeat = self.data / ("heartbeat-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+        heartbeat.write_text(json.dumps({"plugin_version": PLUGIN_VERSION, "session_id": self.session,
+                                         "cwd": str(self.cwd), "timestamp": 1000.0, "extra": True}))
+        result = handle_hook(self.event("SessionStart", source="startup", reason="startup"), self.env)
+        self.assertEqual(result.exit_code, 2)
+        self.assertTrue(result.blocked)
+
+    def test_stop_record_requires_bounded_nonnegative_integer(self):
+        state = self.store.create(self.session, self.cwd, None)
+        self.store.replace(transition(transition(state, "freeze"), "approve_direct"))
+        self.store.replace(transition(self.store.load(self.session), "begin"))
+        stop = self.data / ("stop-" + __import__("hashlib").sha256(self.session.encode()).hexdigest() + ".json")
+        for count in (-1, 2, True, False, "0"):
+            with self.subTest(count=count):
+                stop.write_text(json.dumps({"count": count}))
+                result = handle_hook(self.event("Stop", stop_hook_active=False, last_assistant_message="incomplete"), self.env)
+                self.assertEqual(result.exit_code, 2)
+                self.assertTrue(result.blocked)
 
     def test_profile_is_verified_before_heartbeat_and_agent_start(self):
         self.profile.write_text(self.profile.read_text().replace('sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'))
@@ -192,6 +238,9 @@ class HookTests(unittest.TestCase):
                                 capture_output=True, env={**os.environ, "CODEX_FORGE_STATE_DIR": str(self.data)})
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout), {})
+        leading = subprocess.run([sys.executable, str(entry)], input=" \n\t" + json.dumps(event) + " \n", text=True,
+                                 capture_output=True, env={**os.environ, "CODEX_FORGE_STATE_DIR": str(self.data)})
+        self.assertEqual(leading.returncode, 0)
         bad = subprocess.run([sys.executable, str(entry)], input="{} {}", text=True, capture_output=True)
         self.assertEqual(bad.returncode, 2)
         self.assertEqual(json.loads(bad.stdout)["decision"], "block")

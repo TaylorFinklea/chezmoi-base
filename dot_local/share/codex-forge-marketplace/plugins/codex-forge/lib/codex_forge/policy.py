@@ -47,19 +47,21 @@ def _safe_git(words: list[str]) -> bool:
         return False
     command = words[1]
     args = words[2:]
+    requires_no_textconv = command in {"log", "diff", "show"}
     if command == "status":
         options = {"--short", "--branch", "--porcelain", "--untracked-files", "--ignored", "--ahead-behind"}
     elif command == "log":
-        options = {"--oneline", "--decorate", "--all", "--graph", "--stat", "--patch", "--no-patch", "--follow"}
+        options = {"--oneline", "--decorate", "--all", "--graph", "--stat", "--patch", "--no-patch", "--follow", "--no-textconv"}
     elif command == "diff":
-        options = {"--stat", "--name-only", "--name-status", "--check", "--cached", "--staged", "--no-ext-diff", "--no-renames"}
+        options = {"--stat", "--name-only", "--name-status", "--check", "--cached", "--staged", "--no-ext-diff", "--no-renames", "--no-textconv"}
     elif command == "show":
-        options = {"--stat", "--name-only", "--name-status", "--format=short", "--no-patch", "--patch"}
+        options = {"--stat", "--name-only", "--name-status", "--format=short", "--no-patch", "--patch", "--no-textconv"}
     elif command == "rev-parse":
         options = {"--show-toplevel", "--show-prefix", "--git-dir", "--is-inside-work-tree", "--is-inside-git-dir", "--verify"}
     else:
         return False
     after_separator = False
+    saw_no_textconv = False
     for arg in args:
         if arg == "--":
             after_separator = True
@@ -67,6 +69,7 @@ def _safe_git(words: list[str]) -> bool:
         if after_separator:
             continue
         if arg in options:
+            saw_no_textconv = saw_no_textconv or arg == "--no-textconv"
             continue
         if command == "log" and (re.fullmatch(r"-[0-9]+", arg) or re.fullmatch(r"--(?:max-count|since|until)=.+", arg)):
             continue
@@ -74,7 +77,7 @@ def _safe_git(words: list[str]) -> bool:
             continue
         if arg.startswith("-"):
             return False
-    return True
+    return not requires_no_textconv or saw_no_textconv
 
 
 def _safe_ls(words: list[str]) -> bool:
@@ -200,22 +203,22 @@ def classify_tool(tool_name: str, tool_input: Any, state: Any) -> PolicyDecision
     status = getattr(state, "status", None)
     if status not in {"shaping", "frozen"}:
         return PolicyDecision(True, "Forge approval is active")
+    # Namespace rejection deliberately precedes every local-tool dispatch.
+    if isinstance(tool_name, str) and _is_mcp_namespace(tool_name):
+        return PolicyDecision(False, "Forge shaping denies unknown MCP tools.", False)
     if not isinstance(tool_name, str) or not tool_name:
         return PolicyDecision(False, "Forge shaping denies unknown tools.", False)
-    if _is_mcp_namespace(tool_name):
-        return PolicyDecision(False, "Forge shaping denies unknown MCP tools.", False)
-    canonical = tool_name.rsplit(".", 1)[-1]
-    if canonical in WRITER_TOOLS or tool_name.lower() in {name.lower() for name in WRITER_TOOLS}:
+    if tool_name in WRITER_TOOLS:
         return PolicyDecision(False, "Forge shaping blocks writer tools until nonce approval.")
-    if canonical in {"request_user_input", "RequestUserInput"}:
+    if tool_name == "request_user_input":
         return PolicyDecision(True, "user input is permitted during shaping")
-    if canonical.lower() in {"browser", "computer", "web_search", "websearch"}:
+    if tool_name in {"browser", "computer", "web_search", "websearch"}:
         return PolicyDecision(True, "hosted tool is outside the Forge hook path")
-    if canonical in {"Agent", "spawn_agent", "SpawnAgent", "agent"}:
+    if tool_name == "Agent":
         if _is_forge_scout(tool_input):
             return PolicyDecision(True, "managed forge-scout agent is permitted during shaping")
         return PolicyDecision(False, "Forge shaping blocks non-managed or mixed-mode agents until nonce approval.")
-    if canonical == "Bash" or tool_name in {"Bash", "shell", "Shell"}:
+    if tool_name == "Bash":
         if _shell_allowed(_tool_input_command(tool_input)):
             return PolicyDecision(True, "read-only shell command is permitted during shaping")
         return PolicyDecision(False, "Forge shaping blocks mutating or ambiguous shell commands.")

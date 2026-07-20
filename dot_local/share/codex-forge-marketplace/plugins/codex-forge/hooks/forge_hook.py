@@ -15,7 +15,8 @@ def main() -> int:
     raw = sys.stdin.read()
     decoder = json.JSONDecoder()
     try:
-        event, end = decoder.raw_decode(raw)
+        start = len(raw) - len(raw.lstrip())
+        event, end = decoder.raw_decode(raw, start)
         if raw[end:].strip() or not isinstance(event, dict):
             raise ValueError("stdin must contain exactly one JSON object")
         result = handle_hook(event)

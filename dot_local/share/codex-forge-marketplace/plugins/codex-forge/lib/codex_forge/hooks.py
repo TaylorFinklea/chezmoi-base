@@ -21,6 +21,7 @@ from .state import SecureJSONRecordStore, StateError, StateStore, transition
 PLUGIN_VERSION = "0.1.0"
 CONTINUATION_LIMIT = 1
 APPROVAL_TTL_SECONDS = 30 * 60
+MAX_ISSUED_AT_FUTURE_SECONDS = 5 * 60
 INVALID_APPROVAL_REASON = (
     "Forge requires an exact approval command: approve <nonce> direct|ralph, "
     "revise <nonce>, or cancel <nonce>."
@@ -121,7 +122,48 @@ def _record_store(root: Path) -> SecureJSONRecordStore:
     return SecureJSONRecordStore(root, max_bytes=HOOK_RECORD_MAX_BYTES)
 
 
+def _finite_number(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def _validate_hook_record(name: str, payload: Mapping[str, Any]) -> None:
+    if not isinstance(payload, Mapping):
+        raise HookError("Forge hook record is malformed or inaccessible")
+    if name.startswith("heartbeat-"):
+        required = {"plugin_version", "session_id", "cwd", "timestamp"}
+        if set(payload) != required:
+            raise HookError("Forge heartbeat record is malformed")
+        if (payload["plugin_version"] != PLUGIN_VERSION or
+                not isinstance(payload["session_id"], str) or not payload["session_id"] or
+                not isinstance(payload["cwd"], str) or not payload["cwd"] or
+                not _finite_number(payload["timestamp"])):
+            raise HookError("Forge heartbeat record is malformed")
+        return
+    if name.startswith("approval-"):
+        required = {"nonce", "session_id", "cwd", "repo", "issued_at", "expires_at", "used"}
+        allowed = required | {"used_at"}
+        if not required <= set(payload) or set(payload) - allowed:
+            raise HookError("Forge approval record is malformed")
+        if (not isinstance(payload["nonce"], str) or not payload["nonce"] or
+                not isinstance(payload["session_id"], str) or not payload["session_id"] or
+                not isinstance(payload["cwd"], str) or not payload["cwd"] or
+                (payload["repo"] is not None and not isinstance(payload["repo"], str)) or
+                not _finite_number(payload["issued_at"]) or
+                not _finite_number(payload["expires_at"]) or
+                type(payload["used"]) is not bool):
+            raise HookError("Forge approval record is malformed")
+        if payload["expires_at"] - payload["issued_at"] != APPROVAL_TTL_SECONDS:
+            raise HookError("Forge approval record is malformed")
+        if "used_at" in payload and not _finite_number(payload["used_at"]):
+            raise HookError("Forge approval record is malformed")
+        return
+    if name.startswith("stop-"):
+        if set(payload) != {"count"} or type(payload["count"]) is not int or not 0 <= payload["count"] <= CONTINUATION_LIMIT:
+            raise HookError("Forge Stop record is malformed")
+
+
 def _write_json(root: Path, name: str, payload: Mapping[str, Any]) -> None:
+    _validate_hook_record(name, payload)
     try:
         _record_store(root).write(name, payload)
     except (StateError, OSError, TypeError) as exc:
@@ -130,9 +172,12 @@ def _write_json(root: Path, name: str, payload: Mapping[str, Any]) -> None:
 
 def _read_json(root: Path, name: str) -> Optional[dict[str, Any]]:
     try:
-        return _record_store(root).read(name)
+        payload = _record_store(root).read(name)
     except (StateError, OSError) as exc:
         raise HookError("Forge hook record is malformed or inaccessible") from exc
+    if payload is not None:
+        _validate_hook_record(name, payload)
+    return payload
 
 
 def _status_context(state: Any) -> str:
@@ -151,20 +196,39 @@ def _load_state(event: Mapping[str, Any], env: Any) -> Any:
         raise HookError("Forge state is malformed or inaccessible") from exc
 
 
-def _helper_command(command: Any) -> bool:
-    """Recognize only a direct Forge helper invocation and its status grammar."""
+def _helper_path(env: Any) -> Optional[Path]:
+    value = _env_value(env, "PLUGIN_ROOT", None)
+    if not isinstance(value, str) or not value:
+        return None
+    root_path = Path(value)
+    try:
+        root_info = root_path.lstat()
+        root = root_path.resolve(strict=True)
+        hooks_dir = root / "hooks"
+        hooks_info = hooks_dir.lstat()
+        helper = hooks_dir / "forge_hook.py"
+        helper_info = helper.lstat()
+    except OSError:
+        return None
+    if (root != root_path or stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode) or
+            stat.S_ISLNK(hooks_info.st_mode) or not stat.S_ISDIR(hooks_info.st_mode) or
+            stat.S_ISLNK(helper_info.st_mode) or not stat.S_ISREG(helper_info.st_mode)):
+        return None
+    return helper
+
+
+def _helper_command(command: Any, env: Any) -> bool:
+    """Recognize only the installed hook helper and its explicit status grammar."""
     if not isinstance(command, str):
+        return False
+    helper = _helper_path(env)
+    if helper is None:
         return False
     try:
         words = shlex.split(command, posix=True)
     except ValueError:
         return False
-    if not words:
-        return False
-    executable = Path(words[0]).name
-    if executable not in {"codex-forge", "forge_hook.py"}:
-        return False
-    return words[1:] == ["status"]
+    return words == ["python3", str(helper), "status"]
 
 
 def _profile_path(env: Any) -> Path:
@@ -199,7 +263,7 @@ def _inject_helper_input(tool_input: Any, event: Mapping[str, Any], env: Any) ->
     if not isinstance(tool_input, dict):
         return None
     command = tool_input.get("command")
-    if not _helper_command(command):
+    if not _helper_command(command, env):
         return None
     session_id = _session_id(event)
     if session_id is None:
@@ -237,10 +301,13 @@ def _approval_matches(record: Mapping[str, Any], state: Any, event: Mapping[str,
     repo = _repo_token(state)
     if record.get("repo") != repo:
         return False
+    issued = record.get("issued_at")
     expires = record.get("expires_at")
-    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+    if not _finite_number(issued) or not _finite_number(expires) or not _finite_number(now):
         return False
-    if not math.isfinite(expires) or not math.isfinite(now):
+    if expires - issued != APPROVAL_TTL_SECONDS:
+        return False
+    if issued > now + MAX_ISSUED_AT_FUTURE_SECONDS:
         return False
     if expires <= now:
         return False
@@ -260,7 +327,9 @@ def _handle_session_start(event: Mapping[str, Any], env: Any) -> HookResult:
     if session_id is None or not isinstance(cwd, str):
         raise HookError("SessionStart requires session_id and cwd")
     _verify_forge_scout_profile(env)
-    _write_json(_data_root(env), _hashed_name("heartbeat-", session_id), {
+    heartbeat_name = _hashed_name("heartbeat-", session_id)
+    _read_json(_data_root(env), heartbeat_name)
+    _write_json(_data_root(env), heartbeat_name, {
         "plugin_version": PLUGIN_VERSION,
         "session_id": session_id,
         "cwd": cwd,
@@ -273,6 +342,9 @@ def _handle_session_start(event: Mapping[str, Any], env: Any) -> HookResult:
 def _handle_pre_tool(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
     tool_name = event.get("tool_name", "")
+    updated = _inject_helper_input(event.get("tool_input"), event, env) if tool_name == "Bash" else None
+    if updated is not None:
+        return HookResult(_hook_output("PreToolUse", updatedInput=updated))
     decision = classify_tool(tool_name, event.get("tool_input", {}), state)
     if decision.deny:
         tool_name_lower = tool_name.lower() if isinstance(tool_name, str) else ""
@@ -284,17 +356,13 @@ def _handle_pre_tool(event: Mapping[str, Any], env: Any) -> HookResult:
                 else decision.reason
             ),
         ), blocked=True)
-    canonical = tool_name.rsplit(".", 1)[-1] if isinstance(tool_name, str) else ""
-    if canonical in {"Agent", "spawn_agent", "SpawnAgent", "agent"}:
+    if tool_name == "Agent":
         try:
             _verify_forge_scout_profile(env)
         except HookError as exc:
             return HookResult(_hook_output(
                 "PreToolUse", permissionDecision="deny", permissionDecisionReason=str(exc)
             ), exit_code=2, blocked=True)
-    updated = _inject_helper_input(event.get("tool_input"), event, env)
-    if updated is not None:
-        return HookResult(_hook_output("PreToolUse", updatedInput=updated))
     return HookResult({})
 
 
@@ -340,11 +408,8 @@ def _handle_stop(event: Mapping[str, Any], env: Any) -> HookResult:
     if state.status not in {"executing", "ralph_running"}:
         return HookResult({})
     name = _hashed_name("stop-", state.session_id)
-    record = _read_json(_data_root(env), name) or {"count": 0}
-    try:
-        count = int(record.get("count", 0))
-    except (TypeError, ValueError):
-        count = CONTINUATION_LIMIT
+    record = _read_json(_data_root(env), name)
+    count = 0 if record is None else record["count"]
     if count >= CONTINUATION_LIMIT:
         return HookResult({})
     _write_json(_data_root(env), name, {"count": count + 1})

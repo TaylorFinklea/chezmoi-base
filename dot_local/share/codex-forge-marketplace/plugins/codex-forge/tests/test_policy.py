@@ -1,4 +1,6 @@
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -33,7 +35,7 @@ class PolicyTests(unittest.TestCase):
                 self.assertFalse(classify_tool("Bash", {"command": command}, self.state).allowed)
 
     def test_narrow_read_only_allowlist(self):
-        for command in ("git status", "git log --oneline -3", "git diff --stat", "git show HEAD",
+        for command in ("git status", "git log --oneline -3 --no-textconv", "git diff --stat --no-textconv", "git show --no-textconv HEAD",
                         "rg -n TODO .", "find . -name 'test_*.py'", "ls -la"):
             with self.subTest(command=command):
                 self.assertTrue(is_read_only_shell(command))
@@ -56,6 +58,38 @@ class PolicyTests(unittest.TestCase):
         for command in ("pytest --collect-only", "py.test --collect-only", "pytest", "py.test"):
             with self.subTest(command=command):
                 self.assertFalse(is_read_only_shell(command))
+
+    def test_git_content_commands_require_no_textconv(self):
+        for command in ("git log --oneline", "git diff --stat", "git show HEAD"):
+            with self.subTest(command=command):
+                self.assertFalse(is_read_only_shell(command))
+        for command in ("git log --no-textconv --oneline", "git diff --no-textconv --stat", "git show HEAD --no-textconv"):
+            with self.subTest(command=command):
+                self.assertTrue(is_read_only_shell(command))
+
+    def test_configured_textconv_cannot_execute_when_policy_command_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = root / "marker"
+            script = root / "textconv.sh"
+            script.write_text(f"#!/bin/sh\nprintf x > {marker}\n")
+            script.chmod(0o700)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "diff.spy.textconv", str(script)], check=True)
+            (root / ".gitattributes").write_text("*.bin diff=spy\n")
+            (root / "sample.bin").write_text("before\n")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
+            (root / "sample.bin").write_text("after\n")
+            command = "git diff --no-textconv -- sample.bin"
+            self.assertTrue(is_read_only_shell(command))
+            subprocess.run(command.split(), cwd=root, check=True, stdout=subprocess.DEVNULL)
+            self.assertFalse(marker.exists())
+
+    def test_exact_canonical_local_tool_names_only(self):
+        for name in ("evil.Bash", "evil.Agent", "Bash.extra", "Agent/extra", "bash", "agent", "shell", "Shell"):
+            with self.subTest(name=name):
+                self.assertFalse(classify_tool(name, {"command": "git status"}, self.state).allowed)
 
     def test_allowlist_rejects_paths_wrappers_and_mutating_find_or_git_options(self):
         rejected = (
