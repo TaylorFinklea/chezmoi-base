@@ -45,6 +45,5 @@ adapter = "pi"
 model = "auto"
 timeout_seconds = 60
 # Model picker opens on this "scoped" subset (Tab toggles to the full list).
-# Glob patterns; edit to taste. Providers available: neuralwatt, ollama-cloud,
-# ollama-local, openai-codex, opencode-go.
-model_scope = ["openai-codex/*", "neuralwatt/*"]
+# Glob patterns matched against discovered "provider/model" ids; edit to taste.
+model_scope = ["openai-codex/*"]
