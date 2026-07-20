@@ -67,18 +67,24 @@ class HookTests(unittest.TestCase):
             "permissionDecisionReason": "Forge shaping blocks writer tools until nonce approval."
         }})
         helper = str(self.plugin_root / "bin" / "codex-forge")
-        for subcommand in ("begin", "question", "freeze", "status", "complete", "fail"):
+        payload = "eyJxdWVzdGlvbiI6Im9uZSJ9"
+        helper_commands = {
+            "begin": f"{helper} begin", "question": f"{helper} question {payload}",
+            "freeze": f"{helper} freeze {payload}", "status": f"{helper} status",
+            "complete": f"{helper} complete", "fail": f"{helper} fail {payload}",
+        }
+        for subcommand, command in helper_commands.items():
             with self.subTest(subcommand=subcommand):
                 allowed = handle_hook(self.event("PreToolUse", tool_name="Bash",
-                                                  tool_input={"command": f"{helper} {subcommand}"}), self.env)
+                                                  tool_input={"command": command}), self.env)
                 updated = allowed.output["hookSpecificOutput"]["updatedInput"]
                 self.assertEqual(updated["env"], {"CODEX_FORGE_DATA": str(self.data), "CODEX_FORGE_SESSION_ID": self.session})
         self.store.replace(transition(self.store.load(self.session), "freeze"))
         self.store.replace(transition(self.store.load(self.session), "approve_direct"))
-        for subcommand in ("complete", "fail"):
+        for subcommand, command in (("complete", f"{helper} complete"), ("fail", f"{helper} fail {payload}")):
             with self.subTest(approved_subcommand=subcommand):
                 allowed = handle_hook(self.event("PreToolUse", tool_name="Bash",
-                                                  tool_input={"command": f"{helper} {subcommand}"}), self.env)
+                                                  tool_input={"command": command}), self.env)
                 updated = allowed.output["hookSpecificOutput"]["updatedInput"]
                 self.assertEqual(updated["env"], {"CODEX_FORGE_DATA": str(self.data), "CODEX_FORGE_SESSION_ID": self.session})
         untouched = handle_hook(self.event("PreToolUse", tool_name="Bash",
@@ -87,6 +93,10 @@ class HookTests(unittest.TestCase):
         for command in ("codex-forge status", "forge_hook.py status", "hooks/forge_hook.py status",
                         str(self.plugin_root / "hooks" / "forge_hook.py") + " status",
                         "/tmp/forge_hook.py status", f"python3 {helper} status", f"{helper} status extra",
+                        f"{helper} question abc=", f"{helper} question abc+", f"{helper} question {'a' * 65537}",
+                        f"{helper} question eyJxdWVzdGlvbiI6Im9uZSJ9|cat",
+                        f"{helper} question eyJxdWVzdGlvbiI6Im9uZSJ9;echo bad",
+                        f"{helper} question $(echo bad)", f"{helper} question eyJxdWVzdGlvbiI6Im9uZSJ9 > /tmp/x",
                         f"{helper} --status", f"{helper} question --session-id model", "git status forge_hook.py",
                         "ls codex-forge", "python forge_hook.py status", "codex-forge", "forge_hook.py"):
             with self.subTest(command=command):

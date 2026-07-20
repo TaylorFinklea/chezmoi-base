@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -13,7 +15,13 @@ import time
 from typing import Any, Mapping
 
 from .brief import brief_digest, canonical_brief_bytes, parse_brief
-from .hooks import APPROVAL_TTL_SECONDS, PLUGIN_VERSION, _hashed_name
+from .hooks import (
+    APPROVAL_TTL_SECONDS,
+    PLUGIN_VERSION,
+    STRUCTURED_ARG_MAX_CHARS,
+    STRUCTURED_INPUT_MAX_BYTES,
+    _hashed_name,
+)
 from .state import RepoIdentity, SecureJSONRecordStore, StateError, StateStore, ForgeState, transition
 
 HEARTBEAT_MAX_AGE_SECONDS = 5 * 60
@@ -150,16 +158,32 @@ def _load_bound(root: Path, session: str, *, heartbeat: bool = True) -> tuple[Fo
     return state, cwd, repo
 
 
-def _stdin_json() -> Any:
-    raw = sys.stdin.buffer.read(MAX_STDIN_BYTES + 1)
-    if len(raw) > MAX_STDIN_BYTES:
-        raise CLIError("input_too_large", "stdin JSON exceeds the Forge input limit")
+def _structured_json(argument: str) -> Any:
+    if not isinstance(argument, str) or not argument:
+        raise CLIError("payload_required", "structured input must be one base64url argument")
+    if len(argument) > STRUCTURED_ARG_MAX_CHARS:
+        raise CLIError("payload_oversized", "structured input exceeds the Forge input limit")
+    if "=" in argument:
+        raise CLIError("payload_padding", "structured input must use unpadded base64url")
+    if not all(char.isascii() and (char.isalnum() or char in "_-") for char in argument):
+        raise CLIError("payload_alphabet", "structured input contains an invalid base64url character")
     try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CLIError("invalid_json", "stdin must contain exactly one valid JSON value") from exc
-    if not isinstance(value, dict):
-        raise CLIError("invalid_json", "stdin must contain one JSON object")
+        raw = base64.urlsafe_b64decode(argument + "=" * ((4 - len(argument) % 4) % 4))
+    except (binascii.Error, ValueError) as exc:
+        raise CLIError("payload_encoding", "structured input is not valid base64url") from exc
+    if len(raw) > STRUCTURED_INPUT_MAX_BYTES:
+        raise CLIError("payload_oversized", "structured input exceeds the Forge input limit")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CLIError("invalid_utf8", "structured input is not valid UTF-8") from exc
+    decoder = json.JSONDecoder()
+    try:
+        value, end = decoder.raw_decode(text)
+    except json.JSONDecodeError as exc:
+        raise CLIError("invalid_json", "structured input must contain one JSON value") from exc
+    if text[end:].strip():
+        raise CLIError("trailing_json", "structured input must contain exactly one JSON value")
     return value
 
 
@@ -208,14 +232,16 @@ def begin() -> dict[str, Any]:
     return {"ok": True, "status": state.status}
 
 
-def question() -> dict[str, Any]:
+def question(argument: str) -> dict[str, Any]:
     session, root = _env()
     state, _, _ = _load_bound(root, session)
     if state.status != "shaping":
         raise CLIError("invalid_transition", "questions are allowed only while shaping")
-    payload = _stdin_json()
+    payload = _structured_json(argument)
+    if not isinstance(payload, dict):
+        raise CLIError("invalid_question", "structured question must be {\"question\": \"...\"}")
     if set(payload) != {"question"} or not isinstance(payload["question"], str) or not payload["question"].strip():
-        raise CLIError("invalid_question", "question stdin must be {\"question\": \"...\"}")
+        raise CLIError("invalid_question", "structured question must be {\"question\": \"...\"}")
     question_text = payload["question"]
     if len(question_text.encode("utf-8")) > MAX_QUESTION_BYTES or any(ord(c) < 32 or ord(c) == 127 for c in question_text):
         raise CLIError("invalid_question", "question is empty, oversized, or contains control characters")
@@ -227,12 +253,12 @@ def question() -> dict[str, Any]:
     return {"ok": True, "attempt": meta["question_count"]}
 
 
-def freeze() -> dict[str, Any]:
+def freeze(argument: str) -> dict[str, Any]:
     session, root = _env()
     state, cwd, repo = _load_bound(root, session)
     if state.status != "shaping":
         raise CLIError("invalid_transition", "only a shaping session can be frozen")
-    raw = _stdin_json()
+    raw = _structured_json(argument)
     try:
         brief = parse_brief(raw)
     except ValueError as exc:
@@ -279,10 +305,7 @@ def complete() -> dict[str, Any]:
     session, root = _env()
     state, _, _ = _load_bound(root, session)
     if state.status not in {"executing", "ralph_running"}:
-        raise CLIError("invalid_transition", "completion requires an executing Forge session")
-    payload = _stdin_json()
-    if set(payload) != {"verification"} or payload["verification"] != "passed":
-        raise CLIError("verification_not_terminal", "completion requires terminal verification: passed")
+        raise CLIError("verification_not_terminal", "completion requires an executing Forge session")
     next_state = transition(state, "complete")
     try:
         _store(root).replace(next_state)
@@ -291,14 +314,16 @@ def complete() -> dict[str, Any]:
     return {"ok": True, "status": next_state.status}
 
 
-def fail() -> dict[str, Any]:
+def fail(argument: str) -> dict[str, Any]:
     session, root = _env()
     state, _, _ = _load_bound(root, session)
     if state.status in {"completed", "cancelled", "failed"}:
         raise CLIError("invalid_transition", "terminal Forge sessions cannot fail")
-    payload = _stdin_json()
+    payload = _structured_json(argument)
+    if not isinstance(payload, dict):
+        raise CLIError("invalid_failure", "structured failure must be {\"reason\": \"...\"}")
     if set(payload) != {"reason"} or not isinstance(payload["reason"], str):
-        raise CLIError("invalid_failure", "failure stdin must be {\"reason\": \"...\"}")
+        raise CLIError("invalid_failure", "structured failure must be {\"reason\": \"...\"}")
     reason = payload["reason"].strip()
     if not reason or len(reason.encode("utf-8")) > MAX_FAILURE_BYTES or any(ord(c) < 32 or ord(c) == 127 for c in reason):
         raise CLIError("invalid_failure", "failure reason is empty, oversized, or contains control characters")
@@ -311,28 +336,44 @@ def fail() -> dict[str, Any]:
     return {"ok": True, "status": next_state.status}
 
 
-def dispatch(command: str) -> dict[str, Any]:
+def dispatch(command: str, argument: str | None = None) -> dict[str, Any]:
     if command == "begin":
+        if argument is not None:
+            raise CLIError("invalid_command", "begin accepts no payload")
         return begin()
     if command == "question":
-        return question()
+        if argument is None:
+            raise CLIError("payload_required", "question requires one base64url payload")
+        return question(argument)
     if command == "freeze":
-        return freeze()
+        if argument is None:
+            raise CLIError("payload_required", "freeze requires one base64url payload")
+        return freeze(argument)
     if command == "status":
+        if argument is not None:
+            raise CLIError("invalid_command", "status accepts no payload")
         return status()
     if command == "complete":
+        if argument is not None:
+            raise CLIError("invalid_command", "complete accepts no payload")
         return complete()
     if command == "fail":
-        return fail()
+        if argument is None:
+            raise CLIError("payload_required", "fail requires one base64url payload")
+        return fail(argument)
     raise CLIError("invalid_command", "usage: codex-forge {begin|question|freeze|status|complete|fail}")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     try:
-        if len(args) != 1:
+        if not args or args[0] not in {"begin", "question", "freeze", "status", "complete", "fail"}:
             raise CLIError("invalid_command", "usage: codex-forge {begin|question|freeze|status|complete|fail}")
-        output = dispatch(args[0])
+        command = args[0]
+        expects_payload = command in {"question", "freeze", "fail"}
+        if len(args) != (2 if expects_payload else 1):
+            raise CLIError("invalid_command", f"{command} accepts {'one payload' if expects_payload else 'no payload'}")
+        output = dispatch(command, args[1] if expects_payload else None)
         print(json.dumps(output, sort_keys=True, separators=(",", ":")))
         return 0
     except CLIError as exc:

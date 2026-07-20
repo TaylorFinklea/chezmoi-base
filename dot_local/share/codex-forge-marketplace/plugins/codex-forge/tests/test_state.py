@@ -227,6 +227,30 @@ class StateTests(unittest.TestCase):
         self.assertEqual(self.store.load("s"), replacement)
         self.assertEqual([entry.name for entry in self.root.iterdir()], [self.store.path_for("s").name])
 
+    def test_replace_fs_sync_failure_after_publish_is_uncertain_and_recovers_fail_closed(self):
+        state = self.store.create("sync-failure", self.cwd, None)
+        replacement = transition(state, "freeze")
+        original_fsync = os.fsync
+        calls = 0
+
+        def fail_directory_sync(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("directory durability uncertain")
+            return original_fsync(fd)
+
+        with mock.patch("codex_forge.state.os.fsync", side_effect=fail_directory_sync):
+            with self.assertRaises(StateError):
+                self.store.replace(replacement)
+        # os.replace already published the valid record, so callers must treat
+        # the raised error as an uncertain operation, not retry a stale state.
+        self.assertEqual(self.store.load("sync-failure"), replacement)
+        self.assertEqual(list(self.root.glob(".*.tmp")), [])
+        completed = transition(replacement, "approve_direct")
+        self.store.replace(completed)
+        self.assertEqual(self.store.load("sync-failure"), completed)
+
     def test_loaded_and_replaced_bindings_must_be_real_directories(self):
         state = self.store.create("s", self.cwd, self.repo)
         path = self.store.path_for("s")

@@ -308,6 +308,7 @@ class SecureJSONRecordStore:
             raise StateError("JSON record is oversized")
         temp = self.data_root / ("." + name + "." + secrets.token_hex(12) + ".tmp")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        published = False
         try:
             fd = os.open(temp, flags, 0o600)
             try:
@@ -323,16 +324,21 @@ class SecureJSONRecordStore:
                 os.unlink(temp)
             else:
                 os.replace(temp, path)
+                published = True
             dir_fd = os.open(self.data_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
                 os.fsync(dir_fd)
             finally:
                 os.close(dir_fd)
         except OSError as exc:
-            try:
-                temp.unlink()
-            except FileNotFoundError:
-                pass
+            if not published:
+                try:
+                    temp.unlink()
+                except FileNotFoundError:
+                    pass
+            # Once replace returned, the caller must treat a later fsync error
+            # as uncertain publication and reload rather than replaying a stale
+            # transition. Never remove the published record here.
             raise StateError("could not atomically persist JSON record") from exc
 
     def delete(self, name: str) -> None:

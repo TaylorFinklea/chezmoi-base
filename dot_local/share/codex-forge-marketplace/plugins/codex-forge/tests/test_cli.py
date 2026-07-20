@@ -1,5 +1,5 @@
+import base64
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -48,18 +48,24 @@ class CLITests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_cli(self, command, payload=None, *, cwd=None, env=None):
-        result = subprocess.run([str(CLI), command], input=None if payload is None else json.dumps(payload),
-                                text=True, capture_output=True, cwd=cwd or self.cwd,
+    @staticmethod
+    def encode_payload(payload):
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    def run_cli(self, command, payload=None, *, cwd=None, env=None, raw_arg=None):
+        args = [str(CLI), command]
+        if payload is not None or raw_arg is not None:
+            args.append(self.encode_payload(payload) if raw_arg is None else raw_arg)
+        result = subprocess.run(args, text=True, capture_output=True, cwd=cwd or self.cwd,
                                 env=env or self.env)
         return result, json.loads(result.stdout)
 
     def invoke_cli(self, command, payload=None):
-        raw = b"" if payload is None else json.dumps(payload).encode()
+        argument = None if payload is None else self.encode_payload(payload)
         with mock.patch.dict(os.environ, self.env, clear=False), \
-             mock.patch.object(cli_module, "_current_context", return_value=(self.cwd, None)), \
-             mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw))):
-            return cli_module.dispatch(command)
+             mock.patch.object(cli_module, "_current_context", return_value=(self.cwd, None)):
+            return cli_module.dispatch(command, argument)
 
     def test_begin_question_cap_freeze_nonce_and_status(self):
         result, body = self.run_cli("begin")
@@ -114,10 +120,9 @@ class CLITests(unittest.TestCase):
         state = store.load(self.session)
         state = transition(transition(transition(state, "freeze"), "approve_direct"), "begin")
         store.replace(state)
-        result, body = self.run_cli("complete", {"verification": "pending"})
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(body["code"], "verification_not_terminal")
-        result, body = self.run_cli("complete", {"verification": "passed"})
+        # Completion has no model payload; terminal verification is recorded by
+        # the later direct-execution task before this transition.
+        result, body = self.run_cli("complete")
         self.assertEqual(result.returncode, 0)
         self.assertEqual(body["status"], "completed")
 
@@ -189,10 +194,38 @@ class CLITests(unittest.TestCase):
 
     def test_freeze_rejects_malformed_json(self):
         self.run_cli("begin")
-        result = subprocess.run([str(CLI), "freeze"], input="{bad", text=True, capture_output=True,
+        result = subprocess.run([str(CLI), "freeze", "e2JhZF"], text=True, capture_output=True,
                                 cwd=self.cwd, env=self.env)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)["code"], "invalid_json")
+
+    def test_structured_transport_rejects_padding_alphabet_oversize_utf8_and_trailing_json(self):
+        self.run_cli("begin")
+        valid = self.encode_payload({"question": "one"})
+        cases = (
+            (valid + "=", "payload_padding"),
+            (valid[:-1] + "+", "payload_alphabet"),
+            ("A" * (cli_module.STRUCTURED_ARG_MAX_CHARS + 1), "payload_oversized"),
+            ("_w", "invalid_utf8"),
+            (self.encode_payload({"question": "one"}) + self.encode_payload({"question": "two"}), "trailing_json"),
+        )
+        for argument, code in cases:
+            with self.subTest(code=code):
+                result, body = self.run_cli("question", raw_arg=argument)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(body["code"], code)
+
+    def test_structured_transport_requires_exact_argument_counts_and_no_stdin(self):
+        self.run_cli("begin")
+        valid = self.encode_payload({"question": "one"})
+        for command, args in (("question", []), ("question", [valid, valid]),
+                              ("begin", [valid]), ("status", [valid]), ("complete", [valid]),
+                              ("fail", []), ("freeze", [valid, valid])):
+            with self.subTest(command=command, args=args):
+                result = subprocess.run([str(CLI), command, *args], cwd=self.cwd,
+                                        env=self.env, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotEqual(json.loads(result.stdout).get("ok"), True)
 
 
 if __name__ == "__main__":

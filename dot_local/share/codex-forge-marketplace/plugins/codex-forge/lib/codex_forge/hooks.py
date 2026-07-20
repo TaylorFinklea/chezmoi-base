@@ -41,6 +41,13 @@ FORGE_SCOUT_PROFILE = {
     "developer_instructions": FORGE_SCOUT_INSTRUCTIONS,
 }
 FORGE_SCOUT_PROFILE_MAX_BYTES = 64 * 1024
+# Structured model input is bounded by the former stdin transport limit. The
+# encoded cap is fixed so hooks can reject it before adding injected env.
+# Keep the decoded limit below common execve argument ceilings while retaining
+# the former bounded-input invariant for every structured control record.
+STRUCTURED_INPUT_MAX_BYTES = 48 * 1024
+STRUCTURED_ARG_MAX_CHARS = 4 * ((STRUCTURED_INPUT_MAX_BYTES + 2) // 3)
+_STRUCTURED_ARG_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 @dataclass(frozen=True)
@@ -219,10 +226,16 @@ def _helper_path(env: Any) -> Optional[Path]:
 
 
 _HELPER_SUBCOMMANDS = frozenset(("begin", "question", "freeze", "status", "complete", "fail"))
+_HELPER_PAYLOAD_SUBCOMMANDS = frozenset(("question", "freeze", "fail"))
+
+
+def _valid_structured_argument(value: Any) -> bool:
+    return (isinstance(value, str) and 0 < len(value) <= STRUCTURED_ARG_MAX_CHARS
+            and _STRUCTURED_ARG_RE.fullmatch(value) is not None)
 
 
 def _helper_command(command: Any, env: Any) -> bool:
-    """Recognize only the installed helper and its explicit Task 4 grammar."""
+    """Recognize only the installed helper and its exact argument grammar."""
     if not isinstance(command, str):
         return False
     helper = _helper_path(env)
@@ -232,7 +245,14 @@ def _helper_command(command: Any, env: Any) -> bool:
         words = shlex.split(command, posix=True)
     except ValueError:
         return False
-    return len(words) == 2 and words[0] == str(helper) and words[1] in _HELPER_SUBCOMMANDS
+    if not words or words[0] != str(helper) or words[1] not in _HELPER_SUBCOMMANDS:
+        return False
+    if command != " ".join(words):
+        return False
+    subcommand = words[1]
+    if subcommand in _HELPER_PAYLOAD_SUBCOMMANDS:
+        return len(words) == 3 and _valid_structured_argument(words[2])
+    return len(words) == 2
 
 
 def _helper_input(tool_input: Any, env: Any) -> bool:
