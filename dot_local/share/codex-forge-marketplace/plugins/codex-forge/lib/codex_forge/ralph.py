@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 import ctypes
 import hashlib
 import os
@@ -366,9 +367,18 @@ def prepare_ralph_dispatch(brief: Brief, cwd: Path, *, date: str | None = None) 
         raise
 
 
+_REDACTION = b"[REDACTED]"
+
+
 def _bounded_raw(value: bytes) -> bytes:
     lines = value.splitlines(keepends=True)[-MAX_OUTPUT_LINES:]
     return b"".join(lines)[-MAX_OUTPUT_BYTES:]
+
+
+def _redact_raw(value: bytes, secrets_to_redact: Sequence[bytes]) -> bytes:
+    for secret in sorted({secret for secret in secrets_to_redact if secret}, key=len, reverse=True):
+        value = value.replace(secret, _REDACTION)
+    return value
 
 
 def _bounded(value: bytes | str) -> str:
@@ -384,12 +394,35 @@ def _append_bounded(previous: bytes, chunk: bytes) -> bytes:
     return _bounded_raw(previous + chunk)
 
 
-def _marker_digest(marker: str) -> str:
-    return hashlib.sha256(marker.encode("utf-8")).hexdigest()
+def _marker_digest(marker: str | bytes) -> str:
+    raw = marker.encode("utf-8") if isinstance(marker, str) else marker
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _valid_marker_digest(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _encoded_marker_digest(value: str) -> str:
+    return base64.urlsafe_b64encode(bytes.fromhex(value)).decode("ascii")
+
+
+def _decoded_marker_digest(value: object) -> str | None:
+    if _valid_marker_digest(value):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        decoded = base64.b64decode(value.encode("ascii"), altchars=b"-_", validate=True)
+    except (ValueError, UnicodeError):
+        return None
+    return decoded.hex() if len(decoded) == _MARKER_DIGEST_BYTES else None
+
+
+def encode_marker_digest(value: str | None) -> str | None:
+    """Return the non-sensitive persisted form of a launch digest."""
+    decoded = _decoded_marker_digest(value)
+    return _encoded_marker_digest(decoded) if decoded is not None else None
 
 
 def _linux_marker_matches(pid: int, expected_digest: str) -> bool:
@@ -407,26 +440,9 @@ def _linux_marker_matches(pid: int, expected_digest: str) -> bool:
         return False
 
 
-def _darwin_marker_matches(pid: int, expected_digest: str) -> bool:
-    args = ["ps", "-E", "-ww", "-o", "command=", "-p", str(pid)]
-    try:
-        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True, timeout=2)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if result.returncode != 0:
-        return False
-    pattern = rf"(?:^|\s){re.escape(OWNERSHIP_MARKER_ENV)}=([A-Za-z0-9_-]+)(?=\s|$)"
-    values = re.findall(pattern, result.stdout)
-    return (len(values) == 1 and
-            secrets.compare_digest(_marker_digest(values[0]), expected_digest))
-
-
 def _marker_matches(pid: int, expected_digest: str) -> bool:
     if not _valid_marker_digest(expected_digest):
         return False
-    if sys.platform == "darwin":
-        return _darwin_marker_matches(pid, expected_digest)
     if Path(f"/proc/{pid}/environ").exists():
         return _linux_marker_matches(pid, expected_digest)
     return False
@@ -497,23 +513,28 @@ def _identity(pid: int, marker_digest: str | None = None) -> ProcessIdentity | N
         return None
     if marker_digest is None:
         return identity
+    expected_digest = _decoded_marker_digest(marker_digest)
+    if expected_digest is None:
+        return None
     # Darwin's standard libproc API yields microsecond launch timestamps. That
     # closes same-second PID reuse even where ps does not expose shell-script
     # environments; other platforms must prove the private launch marker.
     if sys.platform == "darwin":
-        return ProcessIdentity(identity.pid, identity.start, identity.pgid, marker_digest)
-    if not _marker_matches(pid, marker_digest):
+        return ProcessIdentity(identity.pid, identity.start, identity.pgid, expected_digest)
+    if not _marker_matches(pid, expected_digest):
         return None
-    return ProcessIdentity(identity.pid, identity.start, identity.pgid, marker_digest)
+    return ProcessIdentity(identity.pid, identity.start, identity.pgid, expected_digest)
 
 
 def _same_identity(record: Mapping[str, Any], identity: ProcessIdentity | None) -> bool:
+    record_digest = _decoded_marker_digest(record.get("marker_digest"))
+    identity_digest = _decoded_marker_digest(identity.marker_digest) if identity is not None else None
     return (identity is not None and type(record.get("pid")) is int and
             type(record.get("pgid")) is int and isinstance(record.get("start"), str) and
-            _valid_marker_digest(record.get("marker_digest")) and
+            record_digest is not None and identity_digest is not None and
             record["pid"] == identity.pid and record["pgid"] == identity.pgid and
             record["start"] == identity.start and
-            secrets.compare_digest(record["marker_digest"], identity.marker_digest or ""))
+            secrets.compare_digest(record_digest, identity_digest))
 
 
 def _spawn_backend(cwd: Path, marker: str) -> subprocess.Popen[bytes]:
@@ -611,13 +632,19 @@ def _terminate_owned_group(expected: ProcessIdentity, child: subprocess.Popen[by
         _terminate_child(child, grace_seconds=grace_seconds)
 
 
-def _capture_pipe(stream: Any, buffer: list[bytes]) -> None:
+def _capture_pipe(stream: Any, buffer: list[bytes], secrets_to_redact: Sequence[bytes]) -> None:
+    carry = max((len(secret) for secret in secrets_to_redact), default=1)
+    pending = b""
     try:
         while True:
             chunk = stream.read(8192)
             if not chunk:
+                buffer[0] = _append_bounded(buffer[0], _redact_raw(pending, secrets_to_redact))
                 return
-            buffer[0] = _append_bounded(buffer[0], chunk)
+            pending = _redact_raw(pending + chunk, secrets_to_redact)
+            if len(pending) > carry:
+                safe, pending = (pending[:-carry], pending[-carry:]) if carry else (pending, b"")
+                buffer[0] = _append_bounded(buffer[0], safe)
     finally:
         try:
             stream.close()
@@ -630,6 +657,7 @@ def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
                  on_output: Callable[[str, str], None] | None = None) -> RalphResult:
     marker = secrets.token_urlsafe(_MARKER_DIGEST_BYTES)
     marker_digest = _marker_digest(marker)
+    secrets_to_redact = (marker.encode("utf-8"), marker_digest.encode("ascii"))
     try:
         child = _spawn_backend(cwd, marker)
     except OSError as exc:
@@ -640,8 +668,8 @@ def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
     stdout: list[bytes] = [b""]
     stderr: list[bytes] = [b""]
     readers = [
-        threading.Thread(target=_capture_pipe, args=(child.stdout, stdout), daemon=True),
-        threading.Thread(target=_capture_pipe, args=(child.stderr, stderr), daemon=True),
+        threading.Thread(target=_capture_pipe, args=(child.stdout, stdout, secrets_to_redact), daemon=True),
+        threading.Thread(target=_capture_pipe, args=(child.stderr, stderr, secrets_to_redact), daemon=True),
     ]
     identity: ProcessIdentity | None = None
 
@@ -654,7 +682,8 @@ def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
         if identity is None:
             raise RalphError("Ralph process identity could not be established")
         if on_spawn:
-            on_spawn(identity)
+            on_spawn(ProcessIdentity(identity.pid, identity.start, identity.pgid,
+                                     encode_marker_digest(identity.marker_digest)))
         exit_code = child.wait()
         for reader in readers:
             if reader.is_alive():
@@ -703,10 +732,11 @@ def launch_ralph_dispatch(preparation: RalphPreparation, *, on_spawn: Callable[[
 
 def recover_ralph_status(record: Mapping[str, Any] | None, *,
                          identity: Callable[[int, str], ProcessIdentity | None] = _identity) -> dict[str, Any]:
+    marker_digest = _decoded_marker_digest(record.get("marker_digest")) if isinstance(record, Mapping) else None
     if (not isinstance(record, Mapping) or type(record.get("pid")) is not int or
-            not _valid_marker_digest(record.get("marker_digest"))):
+            marker_digest is None):
         return {"owned": False, "running": False, "reason": "no Ralph instance record"}
-    observed = identity(record["pid"], record["marker_digest"])
+    observed = identity(record["pid"], marker_digest)
     if not _same_identity(record, observed):
         return {"owned": False, "running": False, "reason": "Ralph PID identity no longer matches"}
     if not _group_exists(observed.pgid):
@@ -716,10 +746,10 @@ def recover_ralph_status(record: Mapping[str, Any] | None, *,
 
 def cancel_owned_ralph(record: Mapping[str, Any] | None, *, grace_seconds: float = KILL_GRACE_SECONDS,
                        identity: Callable[[int, str], ProcessIdentity | None] = _identity) -> dict[str, Any]:
+    marker_digest = _decoded_marker_digest(record.get("marker_digest")) if isinstance(record, Mapping) else None
     if (not isinstance(record, Mapping) or type(record.get("pid")) is not int or
-            not _valid_marker_digest(record.get("marker_digest"))):
+            marker_digest is None):
         raise RalphError("Ralph instance is not owned")
-    marker_digest = record["marker_digest"]
     # Acquire then immediately reacquire identity before TERM so no intervening
     # PID/PGID reuse or marker loss can redirect a group signal.
     current = identity(record["pid"], marker_digest)

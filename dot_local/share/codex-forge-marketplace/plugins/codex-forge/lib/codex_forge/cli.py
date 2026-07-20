@@ -27,6 +27,7 @@ from .verification import missing_verification_commands, verification_complete
 from .ralph import (
     RalphError,
     cancel_owned_ralph,
+    encode_marker_digest,
     inspect_ralph_eligibility,
     launch_ralph_dispatch,
     prepare_ralph_dispatch,
@@ -395,7 +396,7 @@ def ralph_launch() -> dict[str, Any]:
             "pid": identity.pid,
             "pgid": identity.pgid,
             "start": identity.start,
-            "marker_digest": identity.marker_digest,
+            "marker_digest": encode_marker_digest(identity.marker_digest),
             "stdout": "",
             "stderr": "",
         }
@@ -435,7 +436,8 @@ def _bound_ralph_record(root: Path, session: str, cwd: Path, repo: RepoIdentity 
             type(record.get("pgid")) is not int or record["pgid"] <= 0 or
             not isinstance(record.get("start"), str) or not record["start"] or
             not isinstance(record.get("marker_digest"), str) or
-            len(record["marker_digest"]) != 64 or any(char not in "0123456789abcdef" for char in record["marker_digest"]) or
+            len(record["marker_digest"]) != 44 or
+            any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=" for char in record["marker_digest"]) or
             not isinstance(record.get("stdout"), str) or not isinstance(record.get("stderr"), str) or
             ("exit_code" in record and (type(record["exit_code"]) is not int))):
         raise CLIError("ralph_unavailable", "Ralph instance record is unavailable")

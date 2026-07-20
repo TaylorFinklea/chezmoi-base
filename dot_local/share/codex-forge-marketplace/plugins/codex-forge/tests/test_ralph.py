@@ -363,20 +363,6 @@ class RalphTests(unittest.TestCase):
                 cancel_owned_ralph(record, identity=lambda _pid, _marker: next(identities))
         self.assertEqual(killpg.call_args_list, [])
 
-    def test_darwin_marker_probe_uses_argument_array_and_rejects_missing_or_different_markers(self):
-        token = "darwin-private-token"
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        command = ["ps", "-E", "-ww", "-o", "command=", "-p", "71"]
-        matching = subprocess.CompletedProcess(command, 0, f"/bin/sh {ralph_module.OWNERSHIP_MARKER_ENV}={token}\n", "")
-        missing = subprocess.CompletedProcess(command, 0, "/bin/sh OTHER=value\n", "")
-        different = subprocess.CompletedProcess(command, 0, f"/bin/sh {ralph_module.OWNERSHIP_MARKER_ENV}=different\n", "")
-        with mock.patch.object(ralph_module.sys, "platform", "darwin"), \
-             mock.patch.object(ralph_module.subprocess, "run", side_effect=(matching, missing, different)) as run:
-            self.assertTrue(ralph_module._marker_matches(71, digest))
-            self.assertFalse(ralph_module._marker_matches(71, digest))
-            self.assertFalse(ralph_module._marker_matches(71, digest))
-        self.assertEqual([call.args[0] for call in run.call_args_list], [command, command, command])
-
     def test_darwin_same_second_reuse_with_a_missing_or_different_marker_is_never_owned_or_signalled(self):
         expected = "a" * 64
         record = {"pid": 41, "pgid": 41, "start": "1700000000.000001", "marker_digest": expected}
@@ -407,6 +393,36 @@ class RalphTests(unittest.TestCase):
             preparation = prepare_ralph_dispatch(BRIEF, self.repo)
             result = launch_ralph_dispatch(preparation)
         self.assertLessEqual(len(result.stdout.encode()), 64 * 1024)
+
+    def test_output_redacts_marker_and_digest_before_every_surface(self):
+        self.ralph.write_text(
+            "#!/bin/sh\n"
+            "[ \"${1:-}\" = \"-n\" ] && exit 0\n"
+            "python3 -c 'import hashlib, os, sys; t=os.environ[\"CODEX_FORGE_RALPH_OWNERSHIP_MARKER\"]; d=hashlib.sha256(t.encode()).hexdigest(); print(os.environ); print(t); print(d); print(t+t+d+d); print(\"ordinary 🌟\"); print(t+d, file=sys.stderr)'\n"
+        )
+        self.ralph.chmod(0o755)
+        token = "launch-token-abc123"
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        callbacks = []
+        spawned = []
+        with mock.patch.dict(os.environ, self.env(), clear=False), \
+             mock.patch.object(ralph_module.secrets, "token_urlsafe", return_value=token):
+            preparation = prepare_ralph_dispatch(BRIEF, self.repo)
+            result = launch_ralph_dispatch(
+                preparation,
+                on_spawn=lambda identity: spawned.append(repr(identity)),
+                on_output=lambda stream, value: callbacks.append((stream, value)),
+            )
+        surfaces = [result.stdout, result.stderr, repr(callbacks), repr(spawned),
+                    repr({"stdout": result.stdout, "stderr": result.stderr}),
+                    repr(ralph_module.recover_ralph_status(None))]
+        for surface in surfaces:
+            self.assertNotIn(token, surface)
+            self.assertNotIn(digest, surface)
+        self.assertIn("ordinary 🌟", result.stdout)
+        self.assertEqual([stream for stream, _ in callbacks], ["stdout", "stderr"])
+        self.assertIn("[REDACTED]", result.stdout)
+        self.assertIn("[REDACTED]", result.stderr)
 
 
 if __name__ == "__main__":

@@ -200,7 +200,9 @@ class CLITests(unittest.TestCase):
                                     "planning_commit": "planning-commit"})
         self.assertEqual(store.load(self.session).status, "ralph_running")
         ralph_record = json.loads((self.data / f"ralph-{digest_name}.json").read_text())
-        self.assertEqual(ralph_record["marker_digest"], marker_digest)
+        persisted_digest = ralph_record["marker_digest"]
+        self.assertEqual(base64.urlsafe_b64decode(persisted_digest).hex(), marker_digest)
+        self.assertNotIn(marker_digest, json.dumps(ralph_record))
         self.assertNotIn("private-launch-marker", json.dumps(ralph_record))
 
         with mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": False, "pid": 123, "pgid": 123}):
