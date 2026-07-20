@@ -23,6 +23,7 @@ from .hooks import (
     _hashed_name,
 )
 from .state import RepoIdentity, SecureJSONRecordStore, StateError, StateStore, ForgeState, transition
+from .verification import missing_verification_commands, verification_complete
 
 HEARTBEAT_MAX_AGE_SECONDS = 5 * 60
 MAX_STDIN_BYTES = 2 * 1024 * 1024
@@ -303,6 +304,9 @@ def freeze(argument: str) -> dict[str, Any]:
         _write_record(root, "brief-", session, {"digest": digest, "brief": json.loads(canonical_brief_bytes(brief))}, exclusive=True)
         _write_record(root, "approval-", session, approval, exclusive=True)
         frozen = transition(state, "freeze")
+        frozen = ForgeState(frozen.session_id, frozen.cwd, frozen.repo, frozen.status,
+                            frozen.schema_version, frozen.plugin_version, digest,
+                            tuple(brief.verification), ())
         _store(root).replace(frozen)
     except (CLIError, StateError, ValueError, OSError) as exc:
         # replace() can fail after os.replace (directory fsync), so reload the
@@ -334,10 +338,15 @@ def status() -> dict[str, Any]:
 def complete() -> dict[str, Any]:
     session, root = _env()
     state, _, _ = _load_bound(root, session)
-    if state.status in {"executing", "ralph_running"}:
-        raise CLIError("verification_not_terminal", "completion requires terminal verification")
-    raise CLIError("verification_not_terminal", "completion requires an executing Forge session")
+    if state.status != "executing" or not verification_complete(state):
+        missing = missing_verification_commands(state)
+        detail = ", ".join(missing[:8])
+        if len(missing) > 8:
+            detail += ", ..."
+        raise CLIError("verification_not_terminal",
+                       "completion requires passing evidence for: " + (detail or "the frozen brief"))
     try:
+        next_state = transition(state, "complete")
         _store(root).replace(next_state)
     except (StateError, ValueError, OSError) as exc:
         raise CLIError("state_write_failed", "Forge completion could not be persisted") from exc

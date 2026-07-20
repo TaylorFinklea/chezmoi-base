@@ -113,6 +113,32 @@ class CLITests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(body["code"], "binding_mismatch")
 
+    def test_complete_requires_every_exact_verification_record(self):
+        result, _ = self.run_cli("begin")
+        self.assertEqual(result.returncode, 0)
+        store = StateStore(self.data, "0.1.0")
+        state = store.load(self.session)
+        state = transition(transition(transition(state, "freeze"), "approve_direct"), "begin")
+        state = state.__class__(state.session_id, state.cwd, state.repo, state.status,
+                                state.schema_version, state.plugin_version, "digest",
+                                ("python3 -m unittest",), ())
+        store.replace(state)
+        result, body = self.run_cli("complete")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(body["code"], "verification_not_terminal")
+        updated = state.__class__(state.session_id, state.cwd, state.repo, state.status,
+                                  state.schema_version, state.plugin_version, "digest",
+                                  state.verification_commands, ({
+                                      "session_id": self.session, "cwd": str(self.cwd), "repo": None,
+                                      "brief_digest": "digest", "command": "python3 -m unittest",
+                                      "exit_code": 0, "head": "ok", "tail": "ok",
+                                      "response_sha256": "a" * 64, "timestamp": time.time(),
+                                  },))
+        store.replace(updated)
+        result, body = self.run_cli("complete")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(body, {"ok": True, "status": "completed"})
+
     def test_complete_rejects_executing_without_terminal_verification(self):
         result, _ = self.run_cli("begin")
         self.assertEqual(result.returncode, 0)

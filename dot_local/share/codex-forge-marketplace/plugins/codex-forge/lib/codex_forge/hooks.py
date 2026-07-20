@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shlex
 import stat
+import subprocess
 import tempfile
 import time
 import tomllib
@@ -17,6 +18,7 @@ from typing import Any, Mapping, Optional
 
 from .policy import PolicyDecision, _has_agent_environment, _tool_input_command, classify_tool
 from .state import SecureJSONRecordStore, StateError, StateStore, transition
+from .verification import VerificationError, missing_verification_commands, record_verification
 
 PLUGIN_VERSION = "0.1.0"
 CONTINUATION_LIMIT = 1
@@ -193,14 +195,48 @@ def _status_context(state: Any) -> str:
     return f"Codex Forge: session {state.session_id} is {state.status}."
 
 
+def _event_repo(cwd: Path) -> Any:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel", "--git-dir"], cwd=cwd,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, check=True, timeout=5,
+        )
+        lines = result.stdout.splitlines()
+        if len(lines) != 2:
+            return None
+        root = Path(lines[0]).resolve(strict=True)
+        git_dir = Path(lines[1])
+        if not git_dir.is_absolute():
+            git_dir = (cwd / git_dir).resolve(strict=True)
+        else:
+            git_dir = git_dir.resolve(strict=True)
+        return root, git_dir
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def _load_state(event: Mapping[str, Any], env: Any) -> Any:
     session_id = _session_id(event)
     if session_id is None:
         return None
     try:
-        return _store(env).load(session_id)
+        state = _store(env).load(session_id)
     except (StateError, ValueError, OSError) as exc:
         raise HookError("Forge state is malformed or inaccessible") from exc
+    if state is None:
+        return None
+    event_cwd = _event_cwd(event)
+    if event_cwd is None or event_cwd != state.cwd:
+        raise HookError("Forge session cwd binding does not match the hook event")
+    observed_repo = _event_repo(event_cwd)
+    if state.repo is None:
+        if observed_repo is not None:
+            raise HookError("Forge session repository binding does not match the hook event")
+    elif (observed_repo is None or observed_repo[0] != state.repo.root or
+          observed_repo[1] != state.repo.git_dir):
+        raise HookError("Forge session repository binding does not match the hook event")
+    return state
 
 
 def _helper_path(env: Any) -> Optional[Path]:
@@ -437,19 +473,53 @@ def _handle_prompt(event: Mapping[str, Any], env: Any) -> HookResult:
     return HookResult({})
 
 
+def _handle_post_tool(event: Mapping[str, Any], env: Any) -> HookResult:
+    state = _load_state(event, env)
+    if state is None or state.status != "executing":
+        return HookResult({})
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if event.get("tool_name") != "Bash" or not isinstance(command, str) or command not in state.verification_commands:
+        return HookResult({})
+    response = event.get("tool_response")
+    try:
+        updated = record_verification(state, command, response)
+        _store(env).replace(updated)
+    except (VerificationError, StateError, ValueError, OSError) as exc:
+        raise HookError("Forge verification response is malformed or could not be persisted") from exc
+    return HookResult({})
+
+
+def _missing_reason(missing: tuple[str, ...]) -> str:
+    commands = ", ".join(missing[:8])
+    if len(missing) > 8:
+        commands += ", ..."
+    reason = "Forge execution is incomplete; run the remaining exact verification commands: " + commands
+    return reason[:4096]
+
+
 def _handle_stop(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
     if state is None or state.status in {"shaping", "frozen", "completed", "cancelled", "failed"}:
         return HookResult({})
-    if state.status not in {"executing", "ralph_running"}:
+    if state.status != "executing":
+        return HookResult({})
+    missing = missing_verification_commands(state)
+    if not state.verification_commands:
+        missing = ("the frozen brief",)
+    if not missing:
         return HookResult({})
     name = _hashed_name("stop-", state.session_id)
     record = _read_json(_data_root(env), name)
     count = 0 if record is None else record["count"]
     if count >= CONTINUATION_LIMIT:
-        return HookResult({})
+        try:
+            _store(env).replace(transition(state, "fail"))
+        except (StateError, ValueError, OSError) as exc:
+            raise HookError("Forge execution could not be failed safely") from exc
+        return HookResult({"decision": "block", "reason": "Forge execution failed after verification was not completed."}, blocked=True)
     _write_json(_data_root(env), name, {"count": count + 1})
-    return HookResult({"decision": "block", "reason": "Forge execution is incomplete; continue with the remaining work."}, blocked=True)
+    return HookResult({"decision": "block", "reason": _missing_reason(missing)}, blocked=True)
 
 
 def handle_hook(event: Mapping[str, Any], env: Any = None) -> HookResult:
@@ -469,7 +539,7 @@ def handle_hook(event: Mapping[str, Any], env: Any = None) -> HookResult:
         if event_name == "UserPromptSubmit":
             return _handle_prompt(event, env)
         if event_name == "PostToolUse":
-            return HookResult({})
+            return _handle_post_tool(event, env)
         if event_name == "Stop":
             return _handle_stop(event, env)
         raise HookError(f"unsupported hook event: {event_name}")

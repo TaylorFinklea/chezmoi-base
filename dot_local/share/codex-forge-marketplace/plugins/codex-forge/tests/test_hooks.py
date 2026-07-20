@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from codex_forge.hooks import FORGE_SCOUT_INSTRUCTIONS, PLUGIN_VERSION, handle_hook
-from codex_forge.state import StateStore, transition
+from codex_forge.state import ForgeState, StateStore, transition
 
 
 class HookTests(unittest.TestCase):
@@ -262,15 +262,48 @@ class HookTests(unittest.TestCase):
                 }})
                 self.assertTrue(result.blocked)
 
-    def test_post_tool_is_noop_and_stop_continuation_is_bounded(self):
+    def test_post_tool_records_exact_verification_and_stop_fails_on_second_attempt(self):
         state = self.store.create(self.session, self.cwd, None)
-        self.store.replace(transition(transition(state, "freeze"), "approve_direct"))
-        self.store.replace(transition(self.store.load(self.session), "begin"))
-        self.assertEqual(handle_hook(self.event("PostToolUse", tool_name="Bash", tool_input={}, tool_response={}), self.env).output, {})
+        state = transition(transition(state, "freeze"), "approve_direct")
+        state = transition(state, "begin")
+        state = ForgeState(state.session_id, state.cwd, state.repo, state.status,
+                           state.schema_version, state.plugin_version, "digest",
+                           ("python3 -m unittest",), ())
+        self.store.replace(state)
+        unrelated = handle_hook(self.event("PostToolUse", tool_name="Bash",
+                                            tool_input={"command": "git status"},
+                                            tool_response={"output": "bad"}), self.env)
+        self.assertEqual(unrelated.output, {})
+        malformed = handle_hook(self.event("PostToolUse", tool_name="Bash",
+                                            tool_input={"command": "python3 -m unittest"},
+                                            tool_response={"output": "missing exit"}), self.env)
+        self.assertTrue(malformed.blocked)
+        passed = handle_hook(self.event("PostToolUse", tool_name="Bash",
+                                        tool_input={"command": "python3 -m unittest"},
+                                        tool_response={"exit_code": 0, "output": "ok"}), self.env)
+        self.assertEqual(passed.output, {})
+        self.assertEqual(len(self.store.load(self.session).verification_records), 1)
+        self.store.replace(ForgeState(self.session, self.cwd, None, "executing", 1, "0.1.0",
+                                      "digest", ("python3 -m unittest", "git diff --check"),
+                                      self.store.load(self.session).verification_records))
         first = handle_hook(self.event("Stop", stop_hook_active=False, last_assistant_message="incomplete"), self.env)
         self.assertEqual(first.output["decision"], "block")
         second = handle_hook(self.event("Stop", stop_hook_active=True, last_assistant_message="incomplete"), self.env)
-        self.assertEqual(second.output, {})
+        self.assertEqual(second.output["decision"], "block")
+        self.assertEqual(self.store.load(self.session).status, "failed")
+
+    def test_direct_writers_are_bound_to_cwd_and_repository(self):
+        state = self.store.create(self.session, self.cwd, None)
+        state = transition(transition(state, "freeze"), "approve_direct")
+        self.store.replace(state)
+        allowed = handle_hook(self.event("PreToolUse", tool_name="Write",
+                                         tool_input={"file_path": "x"}), self.env)
+        self.assertEqual(allowed.output, {})
+        other = self.root / "other"
+        other.mkdir()
+        denied = handle_hook(self.event("PreToolUse", cwd=str(other), tool_name="Write",
+                                        tool_input={"file_path": "x"}), self.env)
+        self.assertTrue(denied.blocked)
 
     def test_entrypoint_reads_one_object_and_emits_json(self):
         entry = Path(__file__).parents[1] / "hooks" / "forge_hook.py"

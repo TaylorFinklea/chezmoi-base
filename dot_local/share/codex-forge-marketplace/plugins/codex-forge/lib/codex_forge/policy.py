@@ -215,7 +215,9 @@ def classify_tool(tool_name: str, tool_input: Any, state: Any) -> PolicyDecision
         return PolicyDecision(True, "no Forge state; defer to Codex policy")
     status = getattr(state, "status", None)
     if status not in {"shaping", "frozen"}:
-        return PolicyDecision(True, "Forge approval is active")
+        if status in {"approved_direct", "executing", "completed", "cancelled", "failed"}:
+            return PolicyDecision(True, "direct Forge approval is active or the guard is released")
+        return PolicyDecision(False, "Forge shaping denies tools until the approved dispatcher starts.")
     # Namespace rejection deliberately precedes every local-tool dispatch.
     if isinstance(tool_name, str) and _is_mcp_namespace(tool_name):
         return PolicyDecision(False, "Forge shaping denies unknown MCP tools.", False)

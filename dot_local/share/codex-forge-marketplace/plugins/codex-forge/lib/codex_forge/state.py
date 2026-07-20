@@ -41,6 +41,9 @@ class ForgeState:
     status: str = "shaping"
     schema_version: int = SCHEMA_VERSION
     plugin_version: str = PLUGIN_VERSION
+    brief_digest: Optional[str] = None
+    verification_commands: tuple[str, ...] = ()
+    verification_records: tuple[dict[str, Any], ...] = ()
 
 
 _ALLOWED = {
@@ -123,6 +126,14 @@ def _validate_state_types(state: ForgeState, plugin_version: str) -> None:
         raise StateError("invalid state identity")
     if state.repo is not None:
         _validate_repo_types(state.repo, StateError)
+    if state.brief_digest is not None and (not isinstance(state.brief_digest, str) or not state.brief_digest):
+        raise StateError("invalid verification binding")
+    if (not isinstance(state.verification_commands, tuple) or
+            any(not isinstance(command, str) or not command for command in state.verification_commands)):
+        raise StateError("invalid verification commands")
+    if (not isinstance(state.verification_records, tuple) or
+            any(not isinstance(record, dict) for record in state.verification_records)):
+        raise StateError("invalid verification records")
 
 
 def _validate_bindings(cwd: Path, repo: Optional[RepoIdentity], error_type: type[Exception]) -> None:
@@ -158,12 +169,16 @@ def _state_payload(state: ForgeState) -> dict[str, Any]:
         "cwd": str(state.cwd),
         "repo": repo,
         "status": state.status,
+        "brief_digest": state.brief_digest,
+        "verification_commands": list(state.verification_commands),
+        "verification_records": list(state.verification_records),
     }
 
 
 def _state_from_payload(payload: Any) -> ForgeState:
-    keys = {"schema_version", "plugin_version", "session_id", "cwd", "repo", "status"}
-    if not isinstance(payload, dict) or set(payload) != keys:
+    old_keys = {"schema_version", "plugin_version", "session_id", "cwd", "repo", "status"}
+    new_keys = old_keys | {"brief_digest", "verification_commands", "verification_records"}
+    if not isinstance(payload, dict) or set(payload) not in (old_keys, new_keys):
         raise StateError("invalid state shape")
     if type(payload["schema_version"]) is not int or payload["schema_version"] != SCHEMA_VERSION:
         raise StateError("unsupported state schema")
@@ -203,8 +218,19 @@ def _state_from_payload(payload: Any) -> ForgeState:
         except ValueError as exc:
             raise StateError("cwd is outside repository root") from exc
     _validate_bindings(cwd, repo, StateError)
+    brief_digest = payload.get("brief_digest")
+    verification_commands = payload.get("verification_commands", [])
+    verification_records = payload.get("verification_records", [])
+    if brief_digest is not None and (not isinstance(brief_digest, str) or not brief_digest):
+        raise StateError("invalid verification binding")
+    if (not isinstance(verification_commands, list) or
+            any(not isinstance(command, str) or not command for command in verification_commands)):
+        raise StateError("invalid verification commands")
+    if not isinstance(verification_records, list) or any(not isinstance(record, dict) for record in verification_records):
+        raise StateError("invalid verification records")
     return ForgeState(payload["session_id"], cwd, repo, payload["status"],
-                      payload["schema_version"], payload["plugin_version"])
+                      payload["schema_version"], payload["plugin_version"], brief_digest,
+                      tuple(verification_commands), tuple(verification_records))
 
 
 class SecureJSONRecordStore:
