@@ -473,20 +473,40 @@ def _handle_prompt(event: Mapping[str, Any], env: Any) -> HookResult:
     return HookResult({})
 
 
+POST_TOOL_INPUT_FEEDBACK = (
+    "Forge PostToolUse tool_input is malformed; expected an object with a string command."
+)
+POST_TOOL_RESPONSE_FEEDBACK = (
+    "Forge PostToolUse tool_response is malformed; expected an object with an integer exit_code."
+)
+
+
+def _post_tool_command(tool_input: Any) -> str:
+    if not isinstance(tool_input, Mapping) or "command" not in tool_input:
+        raise HookError(POST_TOOL_INPUT_FEEDBACK)
+    command = tool_input["command"]
+    if not isinstance(command, str) or not command:
+        raise HookError(POST_TOOL_INPUT_FEEDBACK)
+    return command
+
+
 def _handle_post_tool(event: Mapping[str, Any], env: Any) -> HookResult:
     state = _load_state(event, env)
-    if state is None or state.status != "executing":
+    if state is None or state.status != "executing" or event.get("tool_name") != "Bash":
         return HookResult({})
-    tool_input = event.get("tool_input")
-    command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    if event.get("tool_name") != "Bash" or not isinstance(command, str) or command not in state.verification_commands:
+    command = _post_tool_command(event.get("tool_input"))
+    # Unrelated Bash completions are deliberately outside the verification
+    # recorder, but malformed events for a required command must fail closed.
+    if command not in state.verification_commands:
         return HookResult({})
     response = event.get("tool_response")
+    if not isinstance(response, Mapping):
+        raise HookError(POST_TOOL_RESPONSE_FEEDBACK)
     try:
         updated = record_verification(state, command, response)
         _store(env).replace(updated)
     except (VerificationError, StateError, ValueError, OSError) as exc:
-        raise HookError("Forge verification response is malformed or could not be persisted") from exc
+        raise HookError(POST_TOOL_RESPONSE_FEEDBACK) from exc
     return HookResult({})
 
 
@@ -517,7 +537,9 @@ def _handle_stop(event: Mapping[str, Any], env: Any) -> HookResult:
             _store(env).replace(transition(state, "fail"))
         except (StateError, ValueError, OSError) as exc:
             raise HookError("Forge execution could not be failed safely") from exc
-        return HookResult({"decision": "block", "reason": "Forge execution failed after verification was not completed."}, blocked=True)
+        # The durable failed state releases the Stop guard. Allow this event
+        # through so Codex can end immediately; subsequent Stops are no-ops.
+        return HookResult({})
     _write_json(_data_root(env), name, {"count": count + 1})
     return HookResult({"decision": "block", "reason": _missing_reason(missing)}, blocked=True)
 

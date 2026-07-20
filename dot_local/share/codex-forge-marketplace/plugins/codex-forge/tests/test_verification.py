@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -8,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from codex_forge.state import ForgeState
 from codex_forge.verification import (
-    VerificationError, missing_verification_commands, record_verification,
-    verification_complete,
+    PREVIEW_BYTES, VerificationError, missing_verification_commands,
+    record_verification, verification_complete,
 )
 
 
@@ -56,11 +57,31 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(len(complete.verification_records), 3)
         self.assertTrue(verification_complete(complete))
 
-    def test_previews_are_bounded(self):
-        updated = record_verification(self.state, "python3 -m unittest", {"exit_code": 0, "output": "x" * 20_000})
-        evidence = updated.verification_records[0]
-        self.assertLessEqual(len(evidence["head"].encode()), 4096)
-        self.assertLessEqual(len(evidence["tail"].encode()), 4096)
+    def test_previews_are_bounded_at_utf8_boundaries_and_preserve_digest(self):
+        cases = (
+            "x" * PREVIEW_BYTES,
+            "x" * (PREVIEW_BYTES - 3) + "😀" + "tail",
+            "x" * (PREVIEW_BYTES - 1) + "€" + "tail",
+            "replacement � content " * 500,
+            "😀" * 25_000,
+        )
+        for output in cases:
+            with self.subTest(output=output[:20]):
+                response = {"exit_code": 0, "output": output}
+                updated = record_verification(self.state, "python3 -m unittest", response)
+                evidence = updated.verification_records[0]
+                self.assertLessEqual(len(evidence["head"].encode("utf-8")), PREVIEW_BYTES)
+                self.assertLessEqual(len(evidence["tail"].encode("utf-8")), PREVIEW_BYTES)
+                self.assertEqual(
+                    evidence["head"], evidence["head"].encode("utf-8").decode("utf-8")
+                )
+                self.assertEqual(
+                    evidence["tail"], evidence["tail"].encode("utf-8").decode("utf-8")
+                )
+                expected = hashlib.sha256(
+                    ('{"exit_code":0,"output":' + json.dumps(output, ensure_ascii=False, separators=(",", ":")) + '}').encode("utf-8")
+                ).hexdigest()
+                self.assertEqual(evidence["response_sha256"], expected)
 
 
 if __name__ == "__main__":

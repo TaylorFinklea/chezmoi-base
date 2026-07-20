@@ -39,8 +39,11 @@ def _preview(response: Mapping[str, Any]) -> tuple[str, str]:
     encoded = text.encode("utf-8")
     if len(encoded) <= PREVIEW_BYTES:
         return text, text
-    head = encoded[:PREVIEW_BYTES].decode("utf-8", errors="replace")
-    tail = encoded[-PREVIEW_BYTES:].decode("utf-8", errors="replace")
+    # Decode with ``ignore`` after byte slicing so a preview never contains a
+    # replacement character introduced by cutting through a UTF-8 sequence.
+    # The full encoded response remains available to the digest below.
+    head = encoded[:PREVIEW_BYTES].decode("utf-8", errors="ignore")
+    tail = encoded[-PREVIEW_BYTES:].decode("utf-8", errors="ignore")
     return head, tail
 
 

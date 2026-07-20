@@ -274,10 +274,24 @@ class HookTests(unittest.TestCase):
                                             tool_input={"command": "git status"},
                                             tool_response={"output": "bad"}), self.env)
         self.assertEqual(unrelated.output, {})
-        malformed = handle_hook(self.event("PostToolUse", tool_name="Bash",
-                                            tool_input={"command": "python3 -m unittest"},
-                                            tool_response={"output": "missing exit"}), self.env)
-        self.assertTrue(malformed.blocked)
+        for tool_input in (None, [], "python3 -m unittest", {}, {"command": None}):
+            with self.subTest(tool_input=tool_input):
+                malformed = handle_hook(self.event("PostToolUse", tool_name="Bash",
+                                                    tool_input=tool_input,
+                                                    tool_response={"exit_code": 0}), self.env)
+                self.assertTrue(malformed.blocked)
+                self.assertEqual(malformed.exit_code, 2)
+                self.assertIn("tool_input is malformed", malformed.output["reason"])
+        for tool_response in (None, [], {"output": "missing exit"},
+                              {"exit_code": True}, {"exit_code": "0"},
+                              {"exit_code": None}):
+            with self.subTest(tool_response=tool_response):
+                malformed = handle_hook(self.event("PostToolUse", tool_name="Bash",
+                                                    tool_input={"command": "python3 -m unittest"},
+                                                    tool_response=tool_response), self.env)
+                self.assertTrue(malformed.blocked)
+                self.assertEqual(malformed.exit_code, 2)
+                self.assertIn("tool_response is malformed", malformed.output["reason"])
         passed = handle_hook(self.event("PostToolUse", tool_name="Bash",
                                         tool_input={"command": "python3 -m unittest"},
                                         tool_response={"exit_code": 0, "output": "ok"}), self.env)
@@ -289,7 +303,11 @@ class HookTests(unittest.TestCase):
         first = handle_hook(self.event("Stop", stop_hook_active=False, last_assistant_message="incomplete"), self.env)
         self.assertEqual(first.output["decision"], "block")
         second = handle_hook(self.event("Stop", stop_hook_active=True, last_assistant_message="incomplete"), self.env)
-        self.assertEqual(second.output["decision"], "block")
+        self.assertEqual(second.output, {})
+        self.assertEqual(second.exit_code, 0)
+        self.assertEqual(self.store.load(self.session).status, "failed")
+        third = handle_hook(self.event("Stop", stop_hook_active=True, last_assistant_message="incomplete"), self.env)
+        self.assertEqual(third.output, {})
         self.assertEqual(self.store.load(self.session).status, "failed")
 
     def test_direct_writers_are_bound_to_cwd_and_repository(self):

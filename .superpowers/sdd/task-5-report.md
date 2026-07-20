@@ -34,3 +34,16 @@ Status: DONE
 ## Commit
 
 - `feat(codex-forge): require direct verification evidence`
+
+## Review fixes
+
+Status: DONE
+
+- UTF-8-safe head/tail previews now discard incomplete boundary bytes rather than introducing replacement characters; full-response SHA-256 remains computed from canonical complete response bytes.
+- Second incomplete direct Stop durably transitions the Forge session to `failed` and returns an empty allowed hook result; later Stop events are no-ops. First incomplete Stop still blocks once with missing exact commands.
+- Direct PostToolUse now rejects malformed Bash `tool_input`, missing/non-string commands, non-mapping responses, and invalid/missing integer `exit_code` with explicit hook feedback. Unrelated Bash completions remain no-op.
+- Regressions cover exact byte boundary, split multibyte sequences, existing replacement characters, very large output, malformed extraction/type/status cases, and second/third Stop behavior.
+- Focused verification/hooks suite: 24 tests passed.
+- Full plugin discovery: 74 tests passed.
+- `python3 -m py_compile ...` — passed.
+- `git diff --check` — passed.
