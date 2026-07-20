@@ -480,4 +480,6 @@ if ! grep -Fq 'decisions pending: 0' "$tmp/clean.out"; then
   fail 'summary should report zero pending decisions'
 fi
 
+"$repo_root/tests/test-local-mode.sh"
+
 printf 'test-compose: all assertions passed\n'

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)"
-plugin="$repo_root/dot_local/share/codex-forge-marketplace/plugins/codex-forge"
+plugin="$repo_root/private_dot_local/share/codex-forge-marketplace/plugins/codex-forge"
 ralph_executable="$(command -v ralph)"
 python_executable="$(command -v python3)"
 fixture="$(mktemp -d)"

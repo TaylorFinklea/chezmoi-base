@@ -43,9 +43,9 @@ rendered_script="$fixture/rendered/install-codex-forge.sh"
 chmod +x "$rendered_script"
 
 mkdir -p "$marketplace_root/.agents/plugins" "$marketplace_root/plugins"
-cp -R "$repo_root/dot_local/share/codex-forge-marketplace/dot_agents/plugins/marketplace.json" \
+cp -R "$repo_root/private_dot_local/share/codex-forge-marketplace/dot_agents/plugins/marketplace.json" \
   "$marketplace_root/.agents/plugins/marketplace.json"
-cp -R "$repo_root/dot_local/share/codex-forge-marketplace/plugins/codex-forge" \
+cp -R "$repo_root/private_dot_local/share/codex-forge-marketplace/plugins/codex-forge" \
   "$marketplace_root/plugins/codex-forge"
 mv "$marketplace_root/plugins/codex-forge/dot_codex-plugin" "$marketplace_root/plugins/codex-forge/.codex-plugin"
 
@@ -58,7 +58,7 @@ run_installer
 HOME="$home" CODEX_HOME="$codex_home" "$codex_executable" plugin marketplace list --json > "$fixture/marketplaces.json"
 HOME="$home" CODEX_HOME="$codex_home" "$codex_executable" plugin list --marketplace local-managed --json > "$fixture/plugins-first.json"
 
-python3 - "$fixture/marketplaces.json" "$fixture/plugins-first.json" "$codex_home/config.toml" "$fixture/unrelated-before.toml" "$repo_root/dot_local/share/codex-forge-marketplace/plugins/codex-forge/dot_codex-plugin/plugin.json" "$rendered_script" "$unrelated_plugin_selector" "$managed_plugin_selector" <<'PY'
+python3 - "$fixture/marketplaces.json" "$fixture/plugins-first.json" "$codex_home/config.toml" "$fixture/unrelated-before.toml" "$repo_root/private_dot_local/share/codex-forge-marketplace/plugins/codex-forge/dot_codex-plugin/plugin.json" "$rendered_script" "$unrelated_plugin_selector" "$managed_plugin_selector" <<'PY'
 import json
 import re
 import sys
