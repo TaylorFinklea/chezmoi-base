@@ -187,9 +187,10 @@ class CLITests(unittest.TestCase):
             self.assertEqual(self.invoke_cli("ralph-preflight"), {"ok": True, "eligible": True, "reasons": []})
 
         preparation = SimpleNamespace(planning_commit="planning-commit")
+        marker_digest = "a" * 64
         def launch(prepared, *, on_spawn):
             self.assertIs(prepared, preparation)
-            on_spawn(SimpleNamespace(pid=123, pgid=123, start="started"))
+            on_spawn(SimpleNamespace(pid=123, pgid=123, start="started", marker_digest=marker_digest))
             return SimpleNamespace(exit_code=0, stdout="out", stderr="err")
 
         with mock.patch.object(cli_module, "prepare_ralph_dispatch", return_value=preparation), \
@@ -198,6 +199,9 @@ class CLITests(unittest.TestCase):
         self.assertEqual(launched, {"ok": True, "status": "ralph_running", "exit_code": 0,
                                     "planning_commit": "planning-commit"})
         self.assertEqual(store.load(self.session).status, "ralph_running")
+        ralph_record = json.loads((self.data / f"ralph-{digest_name}.json").read_text())
+        self.assertEqual(ralph_record["marker_digest"], marker_digest)
+        self.assertNotIn("private-launch-marker", json.dumps(ralph_record))
 
         with mock.patch.object(cli_module, "recover_ralph_status", return_value={"owned": True, "running": False, "pid": 123, "pgid": 123}):
             observed = self.invoke_cli("ralph-status")
@@ -205,6 +209,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(observed["stdout"], "out")
         self.assertEqual(observed["stderr"], "err")
         self.assertTrue(observed["owned"])
+        self.assertNotIn("marker_digest", observed)
 
         with mock.patch.object(cli_module, "cancel_owned_ralph", return_value={"cancelled": True, "owned": True, "running": False}):
             cancelled = self.invoke_cli("ralph-cancel")

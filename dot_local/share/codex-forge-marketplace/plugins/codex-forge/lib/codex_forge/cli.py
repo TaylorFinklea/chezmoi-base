@@ -395,6 +395,7 @@ def ralph_launch() -> dict[str, Any]:
             "pid": identity.pid,
             "pgid": identity.pgid,
             "start": identity.start,
+            "marker_digest": identity.marker_digest,
             "stdout": "",
             "stderr": "",
         }
@@ -425,7 +426,7 @@ def ralph_launch() -> dict[str, Any]:
 def _bound_ralph_record(root: Path, session: str, cwd: Path, repo: RepoIdentity | None) -> dict[str, Any]:
     record = _read_record(root, "ralph-", session)
     required = {"plugin_version", "session_id", "cwd", "repo_root", "git_dir", "planning_commit",
-                "pid", "pgid", "start", "stdout", "stderr"}
+                "pid", "pgid", "start", "marker_digest", "stdout", "stderr"}
     allowed = required | {"exit_code"}
     if (not isinstance(record, dict) or (set(record) != required and set(record) != allowed) or
             record.get("plugin_version") != PLUGIN_VERSION or record.get("session_id") != session or
@@ -433,6 +434,8 @@ def _bound_ralph_record(root: Path, session: str, cwd: Path, repo: RepoIdentity 
             not record["planning_commit"] or type(record.get("pid")) is not int or record["pid"] <= 0 or
             type(record.get("pgid")) is not int or record["pgid"] <= 0 or
             not isinstance(record.get("start"), str) or not record["start"] or
+            not isinstance(record.get("marker_digest"), str) or
+            len(record["marker_digest"]) != 64 or any(char not in "0123456789abcdef" for char in record["marker_digest"]) or
             not isinstance(record.get("stdout"), str) or not isinstance(record.get("stderr"), str) or
             ("exit_code" in record and (type(record["exit_code"]) is not int))):
         raise CLIError("ralph_unavailable", "Ralph instance record is unavailable")

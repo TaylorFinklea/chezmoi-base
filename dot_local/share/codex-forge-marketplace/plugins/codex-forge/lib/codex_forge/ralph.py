@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ctypes
+import hashlib
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
@@ -19,6 +23,8 @@ MAX_OUTPUT_BYTES = 64 * 1024
 MAX_OUTPUT_LINES = 200
 KILL_GRACE_SECONDS = 2.0
 FORGE_PATHS = (".docs/ai/current-state.md", ".docs/ai/roadmap.md")
+OWNERSHIP_MARKER_ENV = "CODEX_FORGE_RALPH_OWNERSHIP_MARKER"
+_MARKER_DIGEST_BYTES = 32
 
 
 class RalphError(RuntimeError):
@@ -52,6 +58,7 @@ class ProcessIdentity:
     pid: int
     start: str
     pgid: int
+    marker_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -377,13 +384,96 @@ def _append_bounded(previous: bytes, chunk: bytes) -> bytes:
     return _bounded_raw(previous + chunk)
 
 
-def _identity(pid: int) -> ProcessIdentity | None:
+def _marker_digest(marker: str) -> str:
+    return hashlib.sha256(marker.encode("utf-8")).hexdigest()
+
+
+def _valid_marker_digest(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _linux_marker_matches(pid: int, expected_digest: str) -> bool:
+    try:
+        entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\x00")
+    except OSError:
+        return False
+    prefix = (OWNERSHIP_MARKER_ENV + "=").encode("ascii")
+    values = [entry[len(prefix):] for entry in entries if entry.startswith(prefix)]
+    if len(values) != 1:
+        return False
+    try:
+        return secrets.compare_digest(_marker_digest(values[0].decode("ascii")), expected_digest)
+    except UnicodeDecodeError:
+        return False
+
+
+def _darwin_marker_matches(pid: int, expected_digest: str) -> bool:
+    args = ["ps", "-E", "-ww", "-o", "command=", "-p", str(pid)]
+    try:
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    pattern = rf"(?:^|\s){re.escape(OWNERSHIP_MARKER_ENV)}=([A-Za-z0-9_-]+)(?=\s|$)"
+    values = re.findall(pattern, result.stdout)
+    return (len(values) == 1 and
+            secrets.compare_digest(_marker_digest(values[0]), expected_digest))
+
+
+def _marker_matches(pid: int, expected_digest: str) -> bool:
+    if not _valid_marker_digest(expected_digest):
+        return False
+    if sys.platform == "darwin":
+        return _darwin_marker_matches(pid, expected_digest)
+    if Path(f"/proc/{pid}/environ").exists():
+        return _linux_marker_matches(pid, expected_digest)
+    return False
+
+
+class _DarwinProcessBSDInfo(ctypes.Structure):
+    _fields_ = [
+        ("flags", ctypes.c_uint32), ("status", ctypes.c_uint32),
+        ("xstatus", ctypes.c_uint32), ("pid", ctypes.c_uint32),
+        ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
+        ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32),
+        ("rgid", ctypes.c_uint32), ("svuid", ctypes.c_uint32),
+        ("svgid", ctypes.c_uint32), ("reserved", ctypes.c_uint32),
+        ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+        ("nfiles", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
+        ("pjobc", ctypes.c_uint32), ("tdev", ctypes.c_uint32),
+        ("tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
+        ("start_seconds", ctypes.c_uint64), ("start_microseconds", ctypes.c_uint64),
+    ]
+
+
+def _darwin_start(pid: int) -> str | None:
+    try:
+        info = _DarwinProcessBSDInfo()
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        proc_pidinfo = libproc.proc_pidinfo
+        proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                 ctypes.c_void_p, ctypes.c_int]
+        proc_pidinfo.restype = ctypes.c_int
+        result = proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+    except (AttributeError, OSError):
+        return None
+    if result != ctypes.sizeof(info) or info.pid != pid:
+        return None
+    return f"{info.start_seconds}.{info.start_microseconds:06d}"
+
+
+def _base_identity(pid: int) -> ProcessIdentity | None:
     if type(pid) is not int or pid <= 0:
         return None
     try:
         pgid = os.getpgid(pid)
     except OSError:
         return None
+    if sys.platform == "darwin":
+        start = _darwin_start(pid)
+        return ProcessIdentity(pid, start, pgid) if start else None
     proc = Path(f"/proc/{pid}/stat")
     if proc.exists():
         try:
@@ -393,26 +483,46 @@ def _identity(pid: int) -> ProcessIdentity | None:
             return None
     try:
         result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                text=True, timeout=2)
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, timeout=2)
     except (OSError, subprocess.SubprocessError):
         return None
     start = result.stdout.strip()
     return ProcessIdentity(pid, start, pgid) if result.returncode == 0 and start else None
 
 
+def _identity(pid: int, marker_digest: str | None = None) -> ProcessIdentity | None:
+    identity = _base_identity(pid)
+    if identity is None:
+        return None
+    if marker_digest is None:
+        return identity
+    # Darwin's standard libproc API yields microsecond launch timestamps. That
+    # closes same-second PID reuse even where ps does not expose shell-script
+    # environments; other platforms must prove the private launch marker.
+    if sys.platform == "darwin":
+        return ProcessIdentity(identity.pid, identity.start, identity.pgid, marker_digest)
+    if not _marker_matches(pid, marker_digest):
+        return None
+    return ProcessIdentity(identity.pid, identity.start, identity.pgid, marker_digest)
+
+
 def _same_identity(record: Mapping[str, Any], identity: ProcessIdentity | None) -> bool:
     return (identity is not None and type(record.get("pid")) is int and
             type(record.get("pgid")) is int and isinstance(record.get("start"), str) and
+            _valid_marker_digest(record.get("marker_digest")) and
             record["pid"] == identity.pid and record["pgid"] == identity.pgid and
-            record["start"] == identity.start)
+            record["start"] == identity.start and
+            secrets.compare_digest(record["marker_digest"], identity.marker_digest or ""))
 
 
-def _spawn_backend(cwd: Path) -> subprocess.Popen[bytes]:
-    """Spawn only the Ralph backend; Git commands deliberately use ``_run``."""
+def _spawn_backend(cwd: Path, marker: str) -> subprocess.Popen[bytes]:
+    """Spawn Ralph with a private per-launch environment ownership marker."""
+    environment = dict(os.environ)
+    environment[OWNERSHIP_MARKER_ENV] = marker
     return subprocess.Popen(["ralph", "-t", "codex"], cwd=cwd, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            start_new_session=True)
+                            start_new_session=True, env=environment)
 
 
 def _close_pipes(child: subprocess.Popen[bytes]) -> None:
@@ -434,11 +544,14 @@ def _group_exists(pgid: int) -> bool:
 
 def _same_process_identity(expected: ProcessIdentity, observed: ProcessIdentity | None) -> bool:
     return (observed is not None and expected.pid == observed.pid and expected.start == observed.start and
-            expected.pgid == observed.pgid)
+            expected.pgid == observed.pgid and expected.marker_digest is not None and
+            secrets.compare_digest(expected.marker_digest, observed.marker_digest or ""))
 
 
 def _matching_process_identity(expected: ProcessIdentity) -> ProcessIdentity | None:
-    observed = _identity(expected.pid)
+    if not _valid_marker_digest(expected.marker_digest):
+        return None
+    observed = _identity(expected.pid, expected.marker_digest)
     return observed if _same_process_identity(expected, observed) else None
 
 
@@ -515,8 +628,10 @@ def _capture_pipe(stream: Any, buffer: list[bytes]) -> None:
 def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
                  on_spawn: Callable[[ProcessIdentity], None] | None = None,
                  on_output: Callable[[str, str], None] | None = None) -> RalphResult:
+    marker = secrets.token_urlsafe(_MARKER_DIGEST_BYTES)
+    marker_digest = _marker_digest(marker)
     try:
-        child = _spawn_backend(cwd)
+        child = _spawn_backend(cwd, marker)
     except OSError as exc:
         raise RalphError("Ralph launch failed before spawn") from exc
 
@@ -535,7 +650,7 @@ def _run_backend(cwd: Path, *, on_started: Callable[[], None] | None = None,
             on_started()
         for reader in readers:
             reader.start()
-        identity = _identity(child.pid)
+        identity = _identity(child.pid, marker_digest)
         if identity is None:
             raise RalphError("Ralph process identity could not be established")
         if on_spawn:
@@ -586,27 +701,31 @@ def launch_ralph_dispatch(preparation: RalphPreparation, *, on_spawn: Callable[[
         raise
 
 
-def recover_ralph_status(record: Mapping[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(record, Mapping) or type(record.get("pid")) is not int:
+def recover_ralph_status(record: Mapping[str, Any] | None, *,
+                         identity: Callable[[int, str], ProcessIdentity | None] = _identity) -> dict[str, Any]:
+    if (not isinstance(record, Mapping) or type(record.get("pid")) is not int or
+            not _valid_marker_digest(record.get("marker_digest"))):
         return {"owned": False, "running": False, "reason": "no Ralph instance record"}
-    identity = _identity(record["pid"])
-    if not _same_identity(record, identity):
+    observed = identity(record["pid"], record["marker_digest"])
+    if not _same_identity(record, observed):
         return {"owned": False, "running": False, "reason": "Ralph PID identity no longer matches"}
-    if not _group_exists(identity.pgid):
-        return {"owned": True, "running": False, "pid": identity.pid, "pgid": identity.pgid}
-    return {"owned": True, "running": True, "pid": identity.pid, "pgid": identity.pgid}
+    if not _group_exists(observed.pgid):
+        return {"owned": True, "running": False, "pid": observed.pid, "pgid": observed.pgid}
+    return {"owned": True, "running": True, "pid": observed.pid, "pgid": observed.pgid}
 
 
 def cancel_owned_ralph(record: Mapping[str, Any] | None, *, grace_seconds: float = KILL_GRACE_SECONDS,
-                       identity: Callable[[int], ProcessIdentity | None] = _identity) -> dict[str, Any]:
-    if not isinstance(record, Mapping) or type(record.get("pid")) is not int:
+                       identity: Callable[[int, str], ProcessIdentity | None] = _identity) -> dict[str, Any]:
+    if (not isinstance(record, Mapping) or type(record.get("pid")) is not int or
+            not _valid_marker_digest(record.get("marker_digest"))):
         raise RalphError("Ralph instance is not owned")
+    marker_digest = record["marker_digest"]
     # Acquire then immediately reacquire identity before TERM so no intervening
-    # PID/PGID reuse can redirect a group signal.
-    current = identity(record["pid"])
+    # PID/PGID reuse or marker loss can redirect a group signal.
+    current = identity(record["pid"], marker_digest)
     if not _same_identity(record, current):
         raise RalphError("Ralph PID identity no longer matches; refusing to signal")
-    current = identity(record["pid"])
+    current = identity(record["pid"], marker_digest)
     if not _same_identity(record, current):
         raise RalphError("Ralph PID identity no longer matches; refusing to signal")
     try:
@@ -615,13 +734,14 @@ def cancel_owned_ralph(record: Mapping[str, Any] | None, *, grace_seconds: float
         return {"cancelled": False, "owned": True, "running": False}
     deadline = time.monotonic() + max(0.01, grace_seconds)
     while time.monotonic() < deadline:
-        current = identity(record["pid"])
+        current = identity(record["pid"], marker_digest)
         if not _same_identity(record, current):
             return {"cancelled": True, "owned": True, "running": False}
         time.sleep(0.02)
     # Revalidate the leader identity immediately before escalation. Once it is
-    # gone or reused, a recycled process group is never signalled.
-    current = identity(record["pid"])
+    # gone, reused, or no longer proves the launch marker, a recycled process
+    # group is never signalled.
+    current = identity(record["pid"], marker_digest)
     if not _same_identity(record, current):
         return {"cancelled": True, "owned": True, "running": False}
     try:

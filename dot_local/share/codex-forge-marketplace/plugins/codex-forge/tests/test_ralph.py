@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 from pathlib import Path
@@ -308,13 +309,14 @@ class RalphTests(unittest.TestCase):
     def test_pid_reuse_during_exception_cleanup_never_signals_foreign_group(self):
         child = FakePopen(running=True)
         calls = 0
+        marker = "a" * 64
 
-        def identities(pid):
+        def identities(pid, marker_digest=None):
             nonlocal calls
             calls += 1
             if calls == 1:
-                return ProcessIdentity(pid, "owned", pid)
-            return ProcessIdentity(pid, "reused", pid + 1)
+                return ProcessIdentity(pid, "owned", pid, marker_digest)
+            return ProcessIdentity(pid, "reused", pid + 1, marker_digest)
 
         with mock.patch.object(ralph_module, "_spawn_backend", return_value=child), \
              mock.patch.object(ralph_module, "_identity", side_effect=identities), \
@@ -325,38 +327,78 @@ class RalphTests(unittest.TestCase):
         self.assertEqual(killpg.call_args_list, [])
 
     def test_recovery_rejects_restored_and_reused_pids(self):
-        record = {"pid": 20, "pgid": 20, "start": "old"}
+        digest = "a" * 64
+        record = {"pid": 20, "pgid": 20, "start": "old", "marker_digest": digest}
         with mock.patch.object(ralph_module, "_identity", return_value=None):
             self.assertFalse(recover_ralph_status(record)["owned"])
-        reused = ProcessIdentity(20, "new", 20)
+        reused = ProcessIdentity(20, "new", 20, digest)
         with mock.patch.object(ralph_module, "_identity", return_value=reused):
             self.assertFalse(recover_ralph_status(record)["owned"])
         with self.assertRaises(RalphError):
-            cancel_owned_ralph(record, identity=lambda _: reused)
+            cancel_owned_ralph(record, identity=lambda _pid, _marker: reused)
 
     def test_cancellation_escalates_only_for_the_same_owned_identity(self):
-        process = ProcessIdentity(41, "start", 41)
-        record = {"pid": 41, "pgid": 41, "start": "start"}
+        digest = "a" * 64
+        process = ProcessIdentity(41, "start", 41, digest)
+        record = {"pid": 41, "pgid": 41, "start": "start", "marker_digest": digest}
         with mock.patch.object(ralph_module.os, "killpg") as killpg:
-            result = cancel_owned_ralph(record, grace_seconds=0, identity=lambda _: process)
+            result = cancel_owned_ralph(record, grace_seconds=0, identity=lambda _pid, _marker: process)
         self.assertTrue(result["forced"])
         self.assertEqual(killpg.call_args_list, [
             mock.call(41, signal.SIGTERM), mock.call(41, signal.SIGKILL),
         ])
         with mock.patch.object(ralph_module.os, "killpg") as killpg:
             with self.assertRaises(RalphError):
-                cancel_owned_ralph(record, grace_seconds=0, identity=lambda _: None)
+                cancel_owned_ralph(record, grace_seconds=0, identity=lambda _pid, _marker: None)
         self.assertEqual(killpg.call_args_list, [])
 
     def test_cancellation_revalidates_before_term_and_refuses_reused_group(self):
-        process = ProcessIdentity(41, "start", 41)
-        reused = ProcessIdentity(41, "reused", 42)
-        record = {"pid": 41, "pgid": 41, "start": "start"}
+        digest = "a" * 64
+        process = ProcessIdentity(41, "start", 41, digest)
+        reused = ProcessIdentity(41, "reused", 42, digest)
+        record = {"pid": 41, "pgid": 41, "start": "start", "marker_digest": digest}
         identities = iter((process, reused))
         with mock.patch.object(ralph_module.os, "killpg") as killpg:
             with self.assertRaises(RalphError):
-                cancel_owned_ralph(record, identity=lambda _: next(identities))
+                cancel_owned_ralph(record, identity=lambda _pid, _marker: next(identities))
         self.assertEqual(killpg.call_args_list, [])
+
+    def test_darwin_marker_probe_uses_argument_array_and_rejects_missing_or_different_markers(self):
+        token = "darwin-private-token"
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        command = ["ps", "-E", "-ww", "-o", "command=", "-p", "71"]
+        matching = subprocess.CompletedProcess(command, 0, f"/bin/sh {ralph_module.OWNERSHIP_MARKER_ENV}={token}\n", "")
+        missing = subprocess.CompletedProcess(command, 0, "/bin/sh OTHER=value\n", "")
+        different = subprocess.CompletedProcess(command, 0, f"/bin/sh {ralph_module.OWNERSHIP_MARKER_ENV}=different\n", "")
+        with mock.patch.object(ralph_module.sys, "platform", "darwin"), \
+             mock.patch.object(ralph_module.subprocess, "run", side_effect=(matching, missing, different)) as run:
+            self.assertTrue(ralph_module._marker_matches(71, digest))
+            self.assertFalse(ralph_module._marker_matches(71, digest))
+            self.assertFalse(ralph_module._marker_matches(71, digest))
+        self.assertEqual([call.args[0] for call in run.call_args_list], [command, command, command])
+
+    def test_darwin_same_second_reuse_with_a_missing_or_different_marker_is_never_owned_or_signalled(self):
+        expected = "a" * 64
+        record = {"pid": 41, "pgid": 41, "start": "1700000000.000001", "marker_digest": expected}
+        for observed in (None, ProcessIdentity(41, "1700000000.000002", 41, expected),
+                         ProcessIdentity(41, "1700000000.000001", 41, "b" * 64)):
+            with self.subTest(observed=observed), \
+                 mock.patch.object(ralph_module.os, "killpg") as killpg:
+                self.assertFalse(recover_ralph_status(
+                    record, identity=lambda _pid, _marker: observed)["owned"])
+                with self.assertRaises(RalphError):
+                    cancel_owned_ralph(record, identity=lambda _pid, _marker: observed)
+                self.assertEqual(killpg.call_args_list, [])
+
+    def test_backend_marker_stays_in_environment_and_only_its_digest_is_persistable(self):
+        marker = "private-launch-marker"
+        with mock.patch.object(ralph_module.subprocess, "Popen") as popen:
+            ralph_module._spawn_backend(self.repo, marker)
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0], ["ralph", "-t", "codex"])
+        self.assertEqual(kwargs["env"][ralph_module.OWNERSHIP_MARKER_ENV], marker)
+        self.assertNotIn(marker, args[0])
+        self.assertNotEqual(ralph_module._marker_digest(marker), marker)
 
     def test_output_is_bounded(self):
         self.ralph.write_text("#!/bin/sh\npython3 -c 'print(\"x\" * 100000)'\n")
