@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# codex-forge version 0.1.2
-marketplace_root="$HOME/.local/share/codex-forge-marketplace"
-
-codex plugin marketplace add "$marketplace_root" --json
-codex plugin add codex-forge --marketplace local-managed --json

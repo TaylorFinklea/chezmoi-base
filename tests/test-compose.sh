@@ -409,7 +409,7 @@ fi
 rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
 
 # run-on-change scripts apply in isolation; unrelated source drift stays untouched
-script_target='.chezmoiscripts/install-codex-forge.sh'
+script_target='.chezmoiscripts/install-managed-update.sh'
 unrelated_target='unrelated/missing-file'
 printf ' R %s\nM  %s\n' "$script_target" "$unrelated_target" > "$tmp/personal/fake-status.txt"
 rm -rf "$tmp/destination"
