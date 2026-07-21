@@ -1,6 +1,6 @@
 {
   "name": "codex-forge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Guarded Forge workflow for shaping, approving, and verifying Codex work.",
   "author": {
     "name": "Codex Forge"

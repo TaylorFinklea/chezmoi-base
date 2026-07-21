@@ -21,9 +21,9 @@ def main() -> int:
             raise ValueError("stdin must contain exactly one JSON object")
         result = handle_hook(event)
         sys.stdout.write(json.dumps(result.as_dict(), sort_keys=True, separators=(",", ":")) + "\n")
-        return 2 if result.blocked else 0
+        return result.exit_code
     except (ValueError, TypeError, HookError, json.JSONDecodeError) as exc:
-        sys.stdout.write(json.dumps({"decision": "block", "reason": str(exc)}, separators=(",", ":")) + "\n")
+        sys.stderr.write(str(exc) + "\n")
         return 2
 
 

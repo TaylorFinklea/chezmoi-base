@@ -15,7 +15,7 @@ codex plugin marketplace add "$HOME/.local/share/codex-forge-marketplace" --json
 codex plugin add codex-forge --marketplace local-managed --json
 ```
 
-The plugin version is `0.1.0`. A source update changes the managed installer
+The plugin version is `0.1.2`. A source update changes the managed installer
 hash, so chezmoi can run the same update path after a version bump. Inspect
 installation and enabled status with:
 

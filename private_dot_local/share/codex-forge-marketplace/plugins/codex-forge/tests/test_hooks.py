@@ -61,6 +61,20 @@ class HookTests(unittest.TestCase):
         })
         self.assertEqual(stat.S_IMODE(records[0].stat().st_mode), 0o600)
 
+    def test_session_start_canonicalizes_default_temporary_root(self):
+        real_temp = self.root / "real-temp"
+        real_temp.mkdir()
+        temporary_alias = self.root / "temporary-alias"
+        temporary_alias.symlink_to(real_temp, target_is_directory=True)
+        environment = {key: value for key, value in self.env.items()
+                       if key not in {"data_root", "store"}}
+        with mock.patch.object(hooks_module.tempfile, "gettempdir", return_value=str(temporary_alias)):
+            result = handle_hook(self.event("SessionStart", source="startup"), environment)
+        self.assertEqual(result.output, {"hookSpecificOutput": {
+            "hookEventName": "SessionStart", "additionalContext": "Codex Forge: shaping session ready."
+        }})
+        self.assertTrue((real_temp / "codex-forge").is_dir())
+
     def test_pre_tool_use_exact_denial_and_helper_injection(self):
         self.store.create(self.session, self.cwd, None)
         denied = handle_hook(self.event("PreToolUse", tool_name="Write", tool_input={"file_path": "x"}), self.env)
@@ -268,7 +282,7 @@ class HookTests(unittest.TestCase):
         self.store.create(self.session, self.cwd, None)
         result = handle_hook(self.event("PreToolUse", tool_name="Agent",
                                         tool_input={"agent_type": "forge-scout", "prompt": "inspect"}), self.env)
-        self.assertEqual(result.exit_code, 2)
+        self.assertEqual(result.exit_code, 0)
         self.assertTrue(result.blocked)
 
     def test_profile_must_be_regular_non_symlink(self):
@@ -383,7 +397,20 @@ class HookTests(unittest.TestCase):
         self.assertEqual(leading.returncode, 0)
         bad = subprocess.run([sys.executable, str(entry)], input="{} {}", text=True, capture_output=True)
         self.assertEqual(bad.returncode, 2)
-        self.assertEqual(json.loads(bad.stdout)["decision"], "block")
+        self.assertEqual(bad.stdout, "")
+        self.assertEqual(bad.stderr, "stdin must contain exactly one JSON object\n")
+
+    def test_entrypoint_returns_success_for_json_tool_denial(self):
+        self.store.create(self.session, self.cwd, None)
+        entry = Path(__file__).parents[1] / "hooks" / "forge_hook.py"
+        event = self.event("PreToolUse", tool_name="Write", tool_input={"file_path": "x"})
+        result = subprocess.run([sys.executable, str(entry)], input=json.dumps(event), text=True,
+                                capture_output=True, env={**os.environ, "CODEX_FORGE_STATE_DIR": str(self.data)})
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "Forge shaping blocks writer tools until nonce approval."
+        }})
 
     def test_hook_records_reject_hostile_roots_and_leaf_symlinks(self):
         outside = self.root / "outside"

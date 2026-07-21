@@ -72,7 +72,7 @@ source_manifest = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
 installer = Path(sys.argv[6]).read_text(encoding="utf-8")
 unrelated_selector = sys.argv[7]
 managed_selector = sys.argv[8]
-expected_version = "0.1.1"
+expected_version = "0.1.2"
 installer_version = re.search(r"codex-forge version\s+([0-9]+\.[0-9]+\.[0-9]+)", installer)
 if installer_version is None:
     raise SystemExit("rendered installer does not embed plugin version")

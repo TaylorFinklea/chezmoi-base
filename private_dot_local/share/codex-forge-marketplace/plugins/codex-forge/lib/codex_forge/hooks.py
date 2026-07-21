@@ -87,7 +87,9 @@ def _data_root(env: Any) -> Path:
     if value is None:
         value = _env_value(env, "CODEX_FORGE_STATE_DIR", None)
     if value is None:
-        value = os.environ.get("CODEX_FORGE_STATE_DIR", str(Path(tempfile.gettempdir()) / "codex-forge"))
+        value = os.environ.get("CODEX_FORGE_STATE_DIR")
+    if value is None:
+        return Path(tempfile.gettempdir()).resolve() / "codex-forge"
     return Path(value)
 
 
@@ -438,7 +440,7 @@ def _handle_pre_tool(event: Mapping[str, Any], env: Any) -> HookResult:
         except HookError as exc:
             return HookResult(_hook_output(
                 "PreToolUse", permissionDecision="deny", permissionDecisionReason=str(exc)
-            ), exit_code=2, blocked=True)
+            ), blocked=True)
     return HookResult({})
 
 
