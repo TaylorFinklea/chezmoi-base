@@ -1,0 +1,193 @@
+schema = 1
+owner = "base-managed"
+roles = ["personal", "work"]
+source_root = ".skills-src/skills"
+
+[[skills]]
+name = "agentic-actions-auditor"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "ask-questions-if-underspecified"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "bws-project-secrets"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "chezmoi-reconcile"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "conductor-arena"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "core-data-expert"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "delegate"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "dispatch-to-pi"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "fallback-orchestration"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "fastapi-python"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "find-skills"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "git-cleanup"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "guildhall-orchestration"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "handoff-prompt"
+targets = ["native"]
+activation = "explicit"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "harness-deck"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "insecure-defaults"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "loops"
+targets = ["native"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "modern-python"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "plan-backlog-item"
+targets = ["native"]
+activation = "explicit"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "rust-async-patterns"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "rust-best-practices"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "shadcn-ui"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "slash"
+targets = ["native"]
+activation = "explicit"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "swift-concurrency"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "swift-testing-expert"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "swiftui-expert-skill"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"
+
+[[skills]]
+name = "swiftui-pro"
+targets = ["native", "codex", "pi"]
+activation = "automatic"
+upstream_ref = "repo-history"
+transform = "standard"

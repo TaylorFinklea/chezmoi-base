@@ -34,7 +34,18 @@ TEXT_PATTERNS = (
     ("ssh-url", re.compile(rb"ssh://")),
 )
 HTTPS_URL_PATTERN = re.compile(rb"(?i)(?<![A-Za-z0-9])https://[^\s<>\"']+")
-ALLOWED_HTTPS_GIT_REMOTE = "https://github.com/TaylorFinklea/chezmoi-base.git"
+CANONICAL_HTTPS_GIT_REMOTE = b"https://github.com/TaylorFinklea/chezmoi-base.git"
+ALLOWED_DOCUMENTATION_GIT_REMOTES = frozenset(
+    {
+        b"https://github.com/Yelp/detect-secrets",
+        b"https://github.com/apple/swift-async-algorithms",
+        b"https://github.com/astral-sh/ruff-pre-commit",
+        b"https://github.com/koalaman/shellcheck-precommit",
+        b"https://github.com/pointfreeco/swift-concurrency-extras.git",
+        b"https://github.com/rhysd/actionlint",
+        b"https://github.com/zizmorcore/zizmor-pre-commit",
+    }
+)
 FORGE_REPOSITORY_PATH_LENGTHS = {
     "github.com": (2, 2),
     "gitlab.com": (2, None),
@@ -163,16 +174,18 @@ def https_url_rules(contents):
     rules = set()
     for match in HTTPS_URL_PATTERN.finditer(contents):
         raw_candidate = match.group()
-        candidate = raw_candidate.rstrip(b".,;:!?)]}")
+        candidate = raw_candidate.rstrip(b"`.,;:!?)]}")
         if has_https_url_credentials(candidate):
             rules.add("url-credentials")
-        allowed_remote = ALLOWED_HTTPS_GIT_REMOTE.encode()
+        canonical_remote = CANONICAL_HTTPS_GIT_REMOTE
         is_delimited = (
             contents[match.start() - 1 : match.start()] in (b"'", b'"', b"<")
             or contents[match.end() : match.end() + 1] in (b"'", b'"', b">")
         )
-        is_allowed_remote = raw_candidate == allowed_remote and not is_delimited
-        if candidate.startswith(allowed_remote) and not is_allowed_remote:
+        is_canonical_remote = raw_candidate == canonical_remote and not is_delimited
+        is_documentation_remote = candidate in ALLOWED_DOCUMENTATION_GIT_REMOTES
+        is_allowed_remote = is_canonical_remote or is_documentation_remote
+        if candidate.startswith(canonical_remote) and not is_canonical_remote:
             rules.add("git-remote")
             continue
         if is_non_ascii_https_git_remote(candidate):
@@ -197,7 +210,11 @@ def text_rules(contents):
     rules = {name for name, pattern in CREDENTIAL_PATTERNS if pattern.search(contents)}
     for match in EMAIL_PATTERN.finditer(contents):
         domain = match.group("domain").rstrip(b".").decode("ascii").lower()
-        if domain not in ALLOWED_EMAIL_DOMAINS:
+        # A domain with no dot can't be a real email host (owner/repo@ref,
+        # actions/checkout@v4, shadcn@latest, entity.@count, and similar
+        # technical @-syntax all lack a TLD); requiring one drops that noise
+        # without missing any real address, which always has a dotted host.
+        if "." in domain and domain not in ALLOWED_EMAIL_DOMAINS:
             rules.add("private-email")
             break
     rules.update(name for name, pattern in TEXT_PATTERNS if pattern.search(contents))
@@ -311,7 +328,7 @@ def scan(root):
                         for rule in path_rules(relative_path) | {"symlink"}
                     )
                     continue
-                if name == ".DS_Store" or not stat.S_ISREG(mode):
+                if name in {".git", ".DS_Store"} or not stat.S_ISREG(mode):
                     continue
             except (OSError, ValueError):
                 relative_path = path.relative_to(root) if path.is_absolute() else path

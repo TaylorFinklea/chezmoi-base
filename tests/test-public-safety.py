@@ -203,6 +203,12 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(output, "tests/fixtures/fixture-link: symlink\n")
 
+    def test_ignores_git_worktree_pointer_file(self):
+        self.assertEqual(
+            run_scan({".git": "gitdir: /" + "Users/someone/private/worktree"}),
+            0,
+        )
+
     def test_rejects_openai_style_credential(self):
         self.assertNotEqual(run_scan({"dot_example": "token = " + "sk-" + ("a" * 26)}), 0)
 
@@ -215,6 +221,17 @@ class PublicSafetyScannerTests(unittest.TestCase):
         self.assertNotEqual(
             run_scan({"dot_example": "email = person" + "@private.example"}), 0
         )
+
+    def test_accepts_non_email_at_syntax_without_dotted_domain(self):
+        technical_syntax = "\n".join(
+            (
+                "uses: actions/checkout@v4",
+                "predicate = articles.@count",
+                "pnpm dlx shadcn@latest add button",
+                'schema = "harness-deck/report@1"',
+            )
+        )
+        self.assertEqual(run_scan({"dot_example": technical_syntax}), 0)
 
     def test_accepts_example_addresses_followed_by_sentence_punctuation(self):
         addresses = "\n".join(
@@ -241,6 +258,27 @@ class PublicSafetyScannerTests(unittest.TestCase):
             ),
             0,
         )
+
+    def test_accepts_exact_documentation_git_remotes(self):
+        remotes = "\n".join(
+            (
+                "repo: " + https_url("github.com/astral-sh/ruff-pre-commit"),
+                '.package(url: "'
+                + https_url("github.com/apple/swift-async-algorithms")
+                + '", from: "1.0.0")',
+                "`"
+                + https_url("github.com/pointfreeco/swift-concurrency-extras.git")
+                + "`",
+            )
+        )
+        self.assertEqual(run_scan({"dot_example": remotes}), 0)
+
+    def test_rejects_unlisted_documentation_remote(self):
+        code, output = scan_output(
+            {"dot_example": https_url("github.com/astral-sh/ruff-pre-commit.git")}
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(output, "dot_example: git-remote\n")
 
     def test_rejects_non_ascii_https_git_remotes(self):
         code, output = scan_output(
