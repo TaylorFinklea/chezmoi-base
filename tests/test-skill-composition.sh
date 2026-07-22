@@ -25,6 +25,10 @@ done
 
 # Warm the uv script dependency once so command assertions see only skillsync output.
 HOME="$tmp/uv-home" UV_CACHE_DIR="$uv_cache" "$cli" --help > /dev/null 2>&1
+run_python() {
+  UV_CACHE_DIR="$uv_cache" uv run --no-project --python '>=3.11' - "$@"
+}
+
 
 run_skillsync() {
   profile=$1
@@ -114,7 +118,7 @@ assert_projection_contract() {
   expected_pi=$8
   expected_hermes=$9
 
-  python3 - "$profile" "$repo_root/.skillcatalog.toml" "$overlay/.skillcatalog.toml" \
+  run_python "$profile" "$repo_root/.skillcatalog.toml" "$overlay/.skillcatalog.toml" \
     "$rejected_overlay/.skillcatalog.toml" "$home" "$state/ledger.json" \
     "$expected_native" "$expected_codex" "$expected_pi" "$expected_hermes" <<'PY'
 import json
@@ -204,7 +208,7 @@ assert_audit_contract() {
   audit_json="$tmp/$profile-audit.json"
 
   run_skillsync "$profile" "$home" "$config" "$state" "$overlay" "$work_sources" audit --format json > "$audit_json"
-  python3 - "$audit_json" "$expected_manual" "$expected_unmanaged" <<'PY'
+  run_python "$audit_json" "$expected_manual" "$expected_unmanaged" <<'PY'
 import json
 import sys
 
@@ -229,7 +233,7 @@ write_migration_expected() {
   stdout_file=$6
   stderr_file=$7
 
-  python3 - "$repo_root/.skillcatalog.toml" "$overlay/.skillcatalog.toml" "$home" \
+  run_python "$repo_root/.skillcatalog.toml" "$overlay/.skillcatalog.toml" "$home" \
     "$conflict_name" "$verb" > "$stdout_file" 2> "$stderr_file" <<'PY'
 import sys
 import tomllib
@@ -266,7 +270,7 @@ PY
 }
 
 metadata_characters_from_roots() {
-  python3 - "$@" <<'PY'
+  run_python "$@" <<'PY'
 import json
 import re
 import sys
@@ -302,7 +306,7 @@ PY
 }
 
 legacy_collision_count() {
-  python3 - "$@" <<'PY'
+  run_python "$@" <<'PY'
 import sys
 from collections import Counter
 from pathlib import Path
@@ -437,7 +441,7 @@ retired_seed="$render_native/agentic-actions-auditor"
 mkdir -p "$personal_native"
 cp -R "$retired_seed" "$personal_native/migrate-slim-overlay"
 cp -R "$retired_seed" "$personal_native/purge-migrate-skills"
-python3 - "$base_render_state/ledger.json" "$personal_state/ledger.json" <<'PY'
+run_python "$base_render_state/ledger.json" "$personal_state/ledger.json" <<'PY'
 import json
 import sys
 from pathlib import Path
