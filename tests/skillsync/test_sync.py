@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from .conftest import make_base_repo, make_personal_repo
 
 
@@ -122,3 +124,30 @@ def test_atomic_replace_dir_first_write_has_no_prior_target(ss, tmp_path):
     ss.atomic_replace_dir(final_dir, staged_dir)
     assert (final_dir / "a.txt").read_text() == "a"
     assert not staged_dir.exists()
+
+
+def test_compute_sync_states_rejects_bypassed_unsafe_name(ss, tmp_path):
+    """Defense in depth: `load_catalog()` already rejects an unsafe skill
+    name at catalog-parse time (test_catalog.py). This proves the guard
+    holds even if that catalog-level check were somehow bypassed — e.g. a
+    ComposedCatalog assembled by a future code path that never calls
+    load_catalog() — because compute_sync_states() is the single choke
+    point every target_roots[target]/name join in cmd_sync's (and
+    cmd_migrate's) actual write path descends from."""
+    catalog = ss.Catalog(
+        schema=1, owner="base-managed", roles=("personal", "work"),
+        source_root=tmp_path / "src", catalog_path=tmp_path / ".skillcatalog.toml",
+        repo_relative_source_root="src", skills=(), external_source=False,
+    )
+    record = ss.SkillRecord(name="../../evil", targets=("native",),
+                             activation="automatic", upstream_ref="x", transform="standard")
+    composed = ss.ComposedCatalog(profile="personal", base=catalog, overlay=catalog,
+                                   skills={"../../evil": (catalog, record)})
+    target_roots = {"native": tmp_path / "home" / ".claude" / "skills"}
+    ledger = {"schema": 1, "targets": {}}
+    with pytest.raises(ss.SkillError, match="unsafe skill name"):
+        ss.compute_sync_states(composed, target_roots, ledger, tmp_path / "stage")
+    # The guard fires before any source is read or anything staged/written —
+    # neither an escaped destination nor the staging root itself exists.
+    assert not (tmp_path / "evil").exists()
+    assert not (tmp_path / "stage").exists()

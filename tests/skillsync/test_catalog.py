@@ -63,6 +63,33 @@ def test_load_catalog_rejects_duplicate_name_within_catalog(ss, tmp_path):
         ss.load_catalog(repo / ".skillcatalog.toml")
 
 
+def test_load_catalog_rejects_reserved_skill_name(ss, tmp_path):
+    repo = tmp_path / "repo"
+    write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
+                        source_root=".skills-src/skills",
+                        records=[{"name": ".system", "targets": ["native"]}])
+    with pytest.raises(ss.SkillError, match="reserved path marker"):
+        ss.load_catalog(repo / ".skillcatalog.toml")
+
+
+def test_load_catalog_rejects_skill_name_with_path_separator(ss, tmp_path):
+    repo = tmp_path / "repo"
+    write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
+                        source_root=".skills-src/skills",
+                        records=[{"name": "alpha/evil", "targets": ["native"]}])
+    with pytest.raises(ss.SkillError, match="not a safe path segment"):
+        ss.load_catalog(repo / ".skillcatalog.toml")
+
+
+def test_load_catalog_rejects_skill_name_that_is_dot_dot(ss, tmp_path):
+    repo = tmp_path / "repo"
+    write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
+                        source_root=".skills-src/skills",
+                        records=[{"name": "..", "targets": ["native"]}])
+    with pytest.raises(ss.SkillError, match="not a safe path segment"):
+        ss.load_catalog(repo / ".skillcatalog.toml")
+
+
 def test_load_catalog_rejects_invalid_target(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],

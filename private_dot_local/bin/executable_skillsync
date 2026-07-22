@@ -106,6 +106,33 @@ RESERVED_PATH_MARKERS = frozenset(
 REQUIRED_SKILL_KEYS = frozenset({"name", "targets", "activation", "upstream_ref", "transform"})
 
 
+def _skill_name_unsafe_reason(name) -> Optional[str]:
+    """Return why `name` is unsafe to join as a single path segment onto a
+    source or target root, or `None` when it's safe. A name is safe only
+    when it is a non-empty string with no path separator, isn't `.`/`..`,
+    resolves to exactly one `Path` segment equal to itself (rules out
+    absolute paths and anything `Path()` would otherwise collapse/reinterpret),
+    and doesn't collide with a `RESERVED_PATH_MARKERS` entry (case-insensitive,
+    full-segment match — the name IS the segment here, so this can't match a
+    substring).
+
+    Shared by `load_catalog()` (parse-time rejection, so a bad catalog fails
+    before any write) and the sync/migrate write path in
+    `compute_sync_states()`/`cmd_migrate()` (defense in depth: the guard
+    holds even for a name that reaches a destination without ever going
+    through `load_catalog()`, e.g. a hand-edited `ledger.json`)."""
+    if not name or not isinstance(name, str):
+        return f"invalid name: {name!r}"
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return f"not a safe path segment: {name!r}"
+    parts = Path(name).parts
+    if len(parts) != 1 or parts[0] != name:
+        return f"not a safe path segment: {name!r}"
+    if name.lower() in RESERVED_PATH_MARKERS:
+        return f"collides with a reserved path marker: {name!r}"
+    return None
+
+
 # --- frontmatter (unchanged contract from the prior tool) -------------------
 
 
@@ -209,6 +236,9 @@ def load_catalog(catalog_path: Path, *, work_root=None, validate_sources: bool =
         name = raw["name"]
         if not name or not isinstance(name, str):
             raise SkillError(f"{catalog_path}: skill record has invalid name: {raw!r}")
+        unsafe_reason = _skill_name_unsafe_reason(name)
+        if unsafe_reason:
+            raise SkillError(f"{catalog_path}: skill record has invalid name: {raw!r} ({unsafe_reason})")
         if name in seen_names:
             raise SkillError(f"{catalog_path}: duplicate skill name in catalog: {name}")
         seen_names.add(name)
@@ -554,19 +584,6 @@ def stage_projection(src_dir: Path, target: str, transform: str, staging_root: P
     return _stage_verbatim(src_dir, dest)
 
 
-def write_codex_skill(src_dir: Path, codex_root: Path, *, transform: str = "standard") -> Path:
-    """Direct single-Skill Codex projection: stage then atomically replace.
-    Convenience wrapper used by transform-focused tests and reused internally."""
-    src_dir = Path(src_dir)
-    codex_root = Path(codex_root)
-    assert_target_root_allowed("codex", codex_root)
-    dest = codex_root / src_dir.name
-    with tempfile.TemporaryDirectory(prefix="skillsync-codex-") as tmp:
-        staged = _stage_codex(src_dir, Path(tmp) / src_dir.name, transform)
-        atomic_replace_dir(dest, staged)
-    return dest
-
-
 # --- lock -------------------------------------------------------------------
 
 
@@ -665,6 +682,15 @@ def compute_sync_states(
 ) -> list[SyncState]:
     states: list[SyncState] = []
     for name, (catalog, record) in sorted(composed.skills.items()):
+        # Defense in depth: `load_catalog()` already rejects unsafe names at
+        # parse time, but this is the single choke point every write-path
+        # `target_roots[target] / name` join (here, plus cmd_sync's and
+        # cmd_migrate's re-derivation of the same states) descends from, so
+        # re-validate here too in case a future caller builds a ComposedCatalog
+        # without going through load_catalog().
+        unsafe_reason = _skill_name_unsafe_reason(name)
+        if unsafe_reason:
+            raise SkillError(f"refusing unsafe skill name {name!r} ({unsafe_reason})")
         src_dir = catalog.source_root / name
         for target in record.targets:
             dest = target_roots[target] / name
@@ -941,6 +967,13 @@ def cmd_migrate(args: argparse.Namespace) -> int:
                 refused.append(s)
 
         for target, name, entry in find_prune_candidates(composed, ledger):
+            # Prune candidates come from `ledger.json`, not from a
+            # load_catalog()-validated record — a hand-edited or corrupted
+            # ledger entry never passes through catalog validation at all, so
+            # this join needs its own defense-in-depth check.
+            unsafe_reason = _skill_name_unsafe_reason(name)
+            if unsafe_reason:
+                raise SkillError(f"refusing unsafe skill name {name!r} in ledger prune candidate ({unsafe_reason})")
             dest = target_roots[target] / name
             if not dest.exists():
                 if args.apply:
