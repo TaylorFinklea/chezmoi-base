@@ -1,0 +1,1078 @@
+#!/usr/bin/env -S uv run --system-certs --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml>=6"]
+# ///
+"""skillsync — compose and materialize owned Skill catalogs across AI harnesses.
+
+Model (see the skill-ownership-context-reduction phase spec):
+- Every manually managed Skill has exactly one owning repo (base-managed,
+  personal-managed, or work-managed) declared in that repo's
+  `.skillcatalog.toml`. Canonical bodies live under
+  `<repo>/<source_root>/<name>/SKILL.md` (+ references/scripts/assets).
+- A "profile" composes exactly two catalogs: chezmoi-base's catalog plus
+  exactly one overlay (personal or work). Cross-catalog name collisions are a
+  hard failure. A personal-profile run never opens, stats, or reads the work
+  catalog or work source — the work-only code path is gated by
+  `--profile work` (and, for source-touching validation, `--require-sources`).
+- `skillsync lock` records a per-Skill SHA-256 tree hash + provenance into
+  `.skillcatalog.lock.json`; `skillsync check` fails when the tree drifts from
+  the lock. Humans edit TOML/source and rerun `lock`; the lock JSON is never
+  hand-edited.
+- `skillsync sync` projects catalog Skills into the physical target roots
+  (`native` -> ~/.claude/skills, `codex` -> ~/.codex/skills, `pi` ->
+  ~/.pi/agent/skills, `hermes` -> ~/.hermes/skills, personal only) via
+  staged-then-atomically-renamed writes, and only updates a target
+  non-interactively when it still matches the previously generated hash
+  recorded in `~/.local/state/skillsync/ledger.json`. Hand-edited targets or
+  two-sided drift are reported and left untouched.
+- `skillsync migrate` adopts pre-existing legacy/hand-installed directories
+  that exactly match what skillsync would generate, and prunes only
+  directories it previously stamped as owned and that still match the ledger.
+  Unmanaged/mismatched directories are never deleted.
+- Reserved paths (`.codex/skills/.system`, plugin/marketplace caches) are
+  refused even as explicit target-root overrides.
+
+Every command takes `--home`/`--state-root`/`--base-root`/`--overlay-root`/
+`--work-root` explicitly; nothing here ever reads the real HOME implicitly.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+import yaml
+
+try:
+    import tomllib  # py3.11+
+except ModuleNotFoundError:  # pragma: no cover — requires-python already guarantees 3.11+
+    import tomli as tomllib
+
+
+class SkillError(Exception):
+    """Raised for any invalid/conflicting state; the CLI maps this to exit 2."""
+
+
+# --- constants --------------------------------------------------------------
+
+CATALOG_FILENAME = ".skillcatalog.toml"
+LOCK_FILENAME = ".skillcatalog.lock.json"
+OWNER_STAMP_FILENAME = ".skillsync-owner.json"
+LEDGER_FILENAME = "ledger.json"
+
+VALID_OWNERS = frozenset({"base-managed", "personal-managed", "work-managed"})
+VALID_ROLES = frozenset({"personal", "work"})
+VALID_TARGETS = frozenset({"native", "codex", "pi", "hermes"})
+VALID_ACTIVATIONS = frozenset({"automatic", "explicit"})
+VALID_TRANSFORMS = frozenset({"standard", "codex-reduced"})
+
+# Which roles a target is allowed to serve. A catalog may only assign a target
+# to a Skill when the catalog's *entire* declared role set is covered by the
+# target's allowed roles (e.g. hermes is personal-only, so a base catalog
+# whose roles include "work" can never target hermes).
+TARGET_ALLOWED_ROLES = {
+    "native": frozenset({"personal", "work"}),
+    "codex": frozenset({"personal", "work"}),
+    "pi": frozenset({"personal", "work"}),
+    "hermes": frozenset({"personal"}),
+}
+
+EXPECTED_OVERLAY_OWNER = {"personal": "personal-managed", "work": "work-managed"}
+
+# Physical target roots, relative to --home.
+DEFAULT_TARGET_RELATIVE = {
+    "native": (".claude", "skills"),
+    "codex": (".codex", "skills"),
+    "pi": (".pi", "agent", "skills"),
+    "hermes": (".hermes", "skills"),
+}
+
+# Rejected regardless of default vs. explicit --target-root override.
+RESERVED_PATH_MARKERS = frozenset(
+    {".system", "plugins", "plugin-cache", "marketplace", "node_modules", ".cache"}
+)
+
+REQUIRED_SKILL_KEYS = frozenset({"name", "targets", "activation", "upstream_ref", "transform"})
+
+
+# --- frontmatter (unchanged contract from the prior tool) -------------------
+
+
+def split_frontmatter(text: str) -> tuple[dict, str]:
+    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.DOTALL)
+    if not m:
+        return {}, text
+    return (yaml.safe_load(m.group(1)) or {}), m.group(2)
+
+
+def reduce_for_codex(meta: dict, dirname: str) -> dict:
+    desc = meta.get("description")
+    if not desc:
+        raise SkillError(f"{dirname}: missing 'description' (Codex/OpenCode require it)")
+    return {"name": dirname, "description": desc}
+
+
+def render_frontmatter(meta: dict) -> str:
+    # allow_unicode keeps em-dashes etc. literal (not \uXXXX); the huge width stops
+    # yaml from folding long descriptions across lines with backslash continuations.
+    dumped = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, width=10**9).strip()
+    return "---\n" + dumped + "\n---\n"
+
+
+# --- catalog model ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SkillRecord:
+    name: str
+    targets: tuple[str, ...]
+    activation: str
+    upstream_ref: str
+    transform: str
+
+
+@dataclass(frozen=True)
+class Catalog:
+    schema: int
+    owner: str
+    roles: tuple[str, ...]
+    source_root: Optional[Path]          # resolved absolute path; None if unresolved (work, no --work-root)
+    catalog_path: Path                   # path to the .skillcatalog.toml itself
+    repo_relative_source_root: str       # raw TOML string, for ledger "source" provenance (never absolute/private)
+    skills: tuple[SkillRecord, ...]
+    external_source: bool                # True for work-managed (body lives outside catalog_path's repo)
+
+
+@dataclass(frozen=True)
+class ComposedCatalog:
+    profile: str
+    base: Catalog
+    overlay: Catalog
+    skills: dict[str, tuple[Catalog, SkillRecord]] = field(default_factory=dict)
+
+
+def load_catalog(catalog_path: Path, *, work_root=None, validate_sources: bool = True) -> Catalog:
+    """Parse and schema-validate a `.skillcatalog.toml`.
+
+    When `validate_sources` is False, no filesystem access beyond reading
+    `catalog_path` itself happens — `source_root` is resolved as a `Path`
+    (never stat'd) so a work catalog's external source can stay untouched.
+    """
+    catalog_path = Path(catalog_path)
+    try:
+        raw_text = catalog_path.read_text()
+    except FileNotFoundError:
+        raise SkillError(f"catalog not found: {catalog_path}") from None
+    try:
+        data = tomllib.loads(raw_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise SkillError(f"{catalog_path}: invalid TOML: {exc}") from exc
+
+    schema = data.get("schema")
+    if schema != 1:
+        raise SkillError(f"{catalog_path}: unsupported schema {schema!r} (expected 1)")
+    owner = data.get("owner")
+    if owner not in VALID_OWNERS:
+        raise SkillError(f"{catalog_path}: owner must be one of {sorted(VALID_OWNERS)}, got {owner!r}")
+    roles = tuple(data.get("roles") or ())
+    if not roles or not set(roles) <= VALID_ROLES:
+        raise SkillError(f"{catalog_path}: roles must be a nonempty subset of {sorted(VALID_ROLES)}, got {roles!r}")
+    raw_source_root = data.get("source_root")
+    if not raw_source_root or not isinstance(raw_source_root, str):
+        raise SkillError(f"{catalog_path}: source_root is required")
+
+    external_source = owner == "work-managed"
+    if external_source:
+        source_root = (Path(work_root) / raw_source_root) if work_root is not None else None
+    else:
+        source_root = catalog_path.parent / raw_source_root
+
+    seen_names: set[str] = set()
+    records: list[SkillRecord] = []
+    for raw in data.get("skills", []):
+        if not isinstance(raw, dict):
+            raise SkillError(f"{catalog_path}: skill records must be tables, got {raw!r}")
+        missing = REQUIRED_SKILL_KEYS - raw.keys()
+        if missing:
+            raise SkillError(f"{catalog_path}: skill record missing keys {sorted(missing)}: {raw}")
+        name = raw["name"]
+        if not name or not isinstance(name, str):
+            raise SkillError(f"{catalog_path}: skill record has invalid name: {raw!r}")
+        if name in seen_names:
+            raise SkillError(f"{catalog_path}: duplicate skill name in catalog: {name}")
+        seen_names.add(name)
+
+        targets = tuple(raw["targets"])
+        if not targets or not set(targets) <= VALID_TARGETS:
+            raise SkillError(
+                f"{catalog_path}: {name}: targets must be a nonempty subset of {sorted(VALID_TARGETS)}, got {targets!r}"
+            )
+        for target in targets:
+            if not set(roles) <= TARGET_ALLOWED_ROLES[target]:
+                raise SkillError(
+                    f"{catalog_path}: {name}: target {target!r} is not allowed for roles {roles} "
+                    f"(target {target!r} only serves roles {sorted(TARGET_ALLOWED_ROLES[target])})"
+                )
+
+        activation = raw["activation"]
+        if activation not in VALID_ACTIVATIONS:
+            raise SkillError(f"{catalog_path}: {name}: activation must be one of {sorted(VALID_ACTIVATIONS)}")
+        transform = raw["transform"]
+        if transform not in VALID_TRANSFORMS:
+            raise SkillError(f"{catalog_path}: {name}: transform must be one of {sorted(VALID_TRANSFORMS)}")
+        upstream_ref = raw["upstream_ref"]
+        if not str(upstream_ref or "").strip():
+            raise SkillError(f"{catalog_path}: {name}: upstream_ref must be nonempty")
+
+        records.append(
+            SkillRecord(name=name, targets=targets, activation=activation,
+                        upstream_ref=upstream_ref, transform=transform)
+        )
+
+    catalog = Catalog(
+        schema=schema, owner=owner, roles=roles,
+        source_root=source_root, catalog_path=catalog_path,
+        repo_relative_source_root=raw_source_root,
+        skills=tuple(records), external_source=external_source,
+    )
+
+    if validate_sources:
+        if source_root is None:
+            raise SkillError(f"{catalog_path}: source root unresolved (work catalog needs --work-root)")
+        if not source_root.is_dir():
+            raise SkillError(f"{catalog_path}: source root does not exist: {source_root}")
+        _validate_catalog_sources(catalog)
+
+    return catalog
+
+
+def _validate_catalog_sources(catalog: Catalog) -> None:
+    """Body-touching validation: SKILL.md exists, frontmatter name matches, description nonempty."""
+    for record in catalog.skills:
+        skill_md = catalog.source_root / record.name / "SKILL.md"
+        if not skill_md.exists():
+            raise SkillError(f"{catalog.catalog_path}: {record.name}: missing SKILL.md under {catalog.source_root}")
+        meta, _ = split_frontmatter(skill_md.read_text())
+        if meta.get("name") != record.name:
+            raise SkillError(
+                f"{catalog.catalog_path}: {record.name}: frontmatter name {meta.get('name')!r} != catalog name"
+            )
+        if not str(meta.get("description") or "").strip():
+            raise SkillError(f"{catalog.catalog_path}: {record.name}: missing/empty frontmatter description")
+
+
+def load_profile_catalogs(
+    profile: str,
+    base_root: Path,
+    overlay_root: Path,
+    *,
+    work_root=None,
+    require_sources: bool = False,
+) -> tuple[Catalog, Catalog]:
+    """Single choke point for loading a profile's two catalogs.
+
+    For `profile == "personal"`, `work_root` is never read, dereferenced, or
+    otherwise touched — the work catalog is not even loaded. For
+    `profile == "work"`, `work_root` is only touched when `require_sources`
+    is True (matching --require-sources semantics for `check`; diff/sync/
+    migrate/audit/lock always need real content, so they pass True).
+    """
+    base = load_catalog(Path(base_root) / CATALOG_FILENAME, validate_sources=True)
+    overlay_catalog_path = Path(overlay_root) / CATALOG_FILENAME
+
+    if profile == "personal":
+        overlay = load_catalog(overlay_catalog_path, work_root=None, validate_sources=True)
+    elif profile == "work":
+        if require_sources:
+            if work_root is None or not Path(work_root).is_dir():
+                raise SkillError("--require-sources needs an existing work source (--work-root)")
+            overlay = load_catalog(overlay_catalog_path, work_root=work_root, validate_sources=True)
+        else:
+            overlay = load_catalog(overlay_catalog_path, work_root=None, validate_sources=False)
+    else:
+        raise SkillError(f"unknown profile: {profile!r}")
+
+    return base, overlay
+
+
+def compose_profile(profile: str, base: Catalog, overlay: Catalog) -> ComposedCatalog:
+    if profile not in ("personal", "work"):
+        raise SkillError(f"unknown profile: {profile!r}")
+    if base.owner != "base-managed":
+        raise SkillError(f"base catalog owner must be base-managed, got {base.owner!r}")
+    if profile not in base.roles:
+        raise SkillError(f"base catalog does not declare role {profile!r} (roles={base.roles})")
+    expected_owner = EXPECTED_OVERLAY_OWNER[profile]
+    if overlay.owner != expected_owner:
+        raise SkillError(f"profile {profile!r} requires overlay owner {expected_owner!r}, got {overlay.owner!r}")
+    if set(overlay.roles) != {profile}:
+        raise SkillError(
+            f"overlay catalog for profile {profile!r} must declare roles == [{profile!r}], got {overlay.roles!r}"
+        )
+
+    base_names = {r.name for r in base.skills}
+    overlay_names = {r.name for r in overlay.skills}
+    collisions = base_names & overlay_names
+    if collisions:
+        raise SkillError(f"cross-catalog name collision(s) between base and overlay: {sorted(collisions)}")
+
+    skills: dict[str, tuple[Catalog, SkillRecord]] = {r.name: (base, r) for r in base.skills}
+    skills.update({r.name: (overlay, r) for r in overlay.skills})
+    return ComposedCatalog(profile=profile, base=base, overlay=overlay, skills=skills)
+
+
+# --- tree hashing -------------------------------------------------------------
+
+
+def _iter_files(root: Path):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for fn in sorted(filenames):
+            yield Path(dirpath) / fn
+
+
+def tree_hash(root: Path, *, ignore_names: frozenset = frozenset({OWNER_STAMP_FILENAME})) -> str:
+    """Deterministic SHA-256 over (relative path, executable bit, content) for every file,
+    independent of traversal order. Rejects symlinks that resolve outside `root`."""
+    root = Path(root).resolve()
+    if not root.is_dir():
+        raise SkillError(f"tree_hash: not a directory: {root}")
+    records: list[str] = []
+    for path in _iter_files(root):
+        if path.name in ignore_names:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            resolved = path.resolve()
+            if resolved != root and root not in resolved.parents:
+                raise SkillError(f"tree_hash: symlink escapes skill root: {rel} -> {resolved}")
+        mode = "x" if os.access(path, os.X_OK) else "-"
+        content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        records.append(f"{rel}\0{mode}\0{content_hash}")
+    records.sort()
+    digest = hashlib.sha256("\n".join(records).encode()).hexdigest()
+    return f"sha256:{digest}"
+
+
+# --- atomic writes --------------------------------------------------------------
+
+
+def _rename(src: Path, dst: Path) -> None:
+    os.rename(src, dst)
+
+
+def _fsync_tree(root: Path) -> None:
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            fp = os.path.join(dirpath, fn)
+            try:
+                fd = os.open(fp, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
+        try:
+            fd = os.open(dirpath, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+
+
+def atomic_replace_dir(final_dir: Path, staged_dir: Path) -> None:
+    """Rename `staged_dir` into `final_dir`'s place. Never deletes `final_dir`
+    before the replacement is ready; restores it on any failure."""
+    final_dir = Path(final_dir)
+    staged_dir = Path(staged_dir)
+    _fsync_tree(staged_dir)
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    if not final_dir.exists():
+        _rename(staged_dir, final_dir)
+        return
+    backup = final_dir.with_name(f"{final_dir.name}.skillsync-old-{os.getpid()}-{time.time_ns()}")
+    _rename(final_dir, backup)
+    try:
+        _rename(staged_dir, final_dir)
+    except Exception:
+        _rename(backup, final_dir)
+        raise
+    else:
+        shutil.rmtree(backup, ignore_errors=True)
+
+
+def atomic_write_json(path: Path, data: dict) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+# --- ownership stamp + ledger ---------------------------------------------------
+
+
+def write_owner_stamp(dest: Path, *, owner: str, source: str, generated_hash: str, transform: str) -> None:
+    stamp = {"schema": 1, "owner": owner, "source": source, "generated_hash": generated_hash, "transform": transform}
+    (Path(dest) / OWNER_STAMP_FILENAME).write_text(json.dumps(stamp, indent=2, sort_keys=True) + "\n")
+
+
+def read_owner_stamp(dest: Path) -> Optional[dict]:
+    p = Path(dest) / OWNER_STAMP_FILENAME
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def ledger_key(target: str, name: str) -> str:
+    return f"{target}:{name}"
+
+
+def load_ledger(state_root: Path) -> dict:
+    p = Path(state_root) / LEDGER_FILENAME
+    if not p.exists():
+        return {"schema": 1, "targets": {}}
+    data = json.loads(p.read_text())
+    data.setdefault("targets", {})
+    return data
+
+
+def save_ledger(state_root: Path, ledger: dict) -> None:
+    atomic_write_json(Path(state_root) / LEDGER_FILENAME, ledger)
+
+
+def source_label_for(catalog: Catalog, name: str) -> str:
+    """Repo-relative provenance string for stamps/ledger — never an absolute path or remote."""
+    return f"{catalog.owner}:{catalog.repo_relative_source_root}/{name}"
+
+
+# --- target roots ---------------------------------------------------------------
+
+
+def assert_target_root_allowed(target: str, root: Path) -> None:
+    root = Path(root)
+    hit = {p for p in root.parts if p.lower() in RESERVED_PATH_MARKERS}
+    if hit:
+        raise SkillError(
+            f"refusing reserved target root for {target!r}: {root} (reserved path component(s): {sorted(hit)})"
+        )
+
+
+def resolve_target_roots(home: Path, overrides: Optional[dict] = None) -> dict[str, Path]:
+    home = Path(home)
+    roots = {name: home.joinpath(*parts) for name, parts in DEFAULT_TARGET_RELATIVE.items()}
+    for name, path in (overrides or {}).items():
+        roots[name] = Path(path)
+    for name, root in roots.items():
+        assert_target_root_allowed(name, root)
+    return roots
+
+
+# --- projection (per-target rendering) -------------------------------------------
+
+
+def _copy_preserving_mode(src: Path, dest: Path) -> None:
+    if src.is_dir():
+        dest.mkdir(parents=True, exist_ok=True)
+        for child in sorted(src.iterdir()):
+            _copy_preserving_mode(child, dest / child.name)
+    else:
+        shutil.copy2(src, dest)
+
+
+def _stage_verbatim(src_dir: Path, dest: Path) -> Path:
+    dest.mkdir(parents=True, exist_ok=True)
+    for child in sorted(src_dir.iterdir()):
+        if child.name == OWNER_STAMP_FILENAME:
+            continue
+        _copy_preserving_mode(child, dest / child.name)
+    return dest
+
+
+def _stage_codex(src_dir: Path, dest: Path, transform: str) -> Path:
+    if transform not in VALID_TRANSFORMS:
+        raise SkillError(f"unknown transform {transform!r}")
+    dest.mkdir(parents=True, exist_ok=True)
+    meta, body = split_frontmatter((src_dir / "SKILL.md").read_text())
+    reduced = reduce_for_codex(meta, src_dir.name)
+    for child in sorted(src_dir.iterdir()):
+        if child.name in ("SKILL.md", "agents", OWNER_STAMP_FILENAME):
+            continue
+        _copy_preserving_mode(child, dest / child.name)
+    (dest / "SKILL.md").write_text(render_frontmatter(reduced) + body)
+    (dest / "agents").mkdir(exist_ok=True)
+    # Source is the single owner of agents/openai.yaml. A hand-edited destination
+    # sidecar is no longer silently preserved — dest drift is caught as a conflict
+    # by the tree-hash comparison against the ledger, same as any other file.
+    if (src_dir / "agents" / "openai.yaml").exists():
+        shutil.copy2(src_dir / "agents" / "openai.yaml", dest / "agents" / "openai.yaml")
+    else:
+        (dest / "agents" / "openai.yaml").write_text(
+            "interface:\n"
+            f"  display_name: {reduced['name']}\n"
+            f"  short_description: {reduced['description'][:80]}\n"
+        )
+    return dest
+
+
+def stage_projection(src_dir: Path, target: str, transform: str, staging_root: Path) -> Path:
+    src_dir = Path(src_dir)
+    dest = Path(staging_root) / target / src_dir.name
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if target == "codex":
+        return _stage_codex(src_dir, dest, transform)
+    return _stage_verbatim(src_dir, dest)
+
+
+def write_codex_skill(src_dir: Path, codex_root: Path, *, transform: str = "standard") -> Path:
+    """Direct single-Skill Codex projection: stage then atomically replace.
+    Convenience wrapper used by transform-focused tests and reused internally."""
+    src_dir = Path(src_dir)
+    codex_root = Path(codex_root)
+    assert_target_root_allowed("codex", codex_root)
+    dest = codex_root / src_dir.name
+    with tempfile.TemporaryDirectory(prefix="skillsync-codex-") as tmp:
+        staged = _stage_codex(src_dir, Path(tmp) / src_dir.name, transform)
+        atomic_replace_dir(dest, staged)
+    return dest
+
+
+# --- lock -------------------------------------------------------------------
+
+
+def git_commit_hash(repo_root: Path) -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    return out or None
+
+
+def compute_lock_entry(catalog: Catalog, record: SkillRecord, *, commit_hash: Optional[str]) -> dict:
+    src_dir = catalog.source_root / record.name
+    meta, _ = split_frontmatter((src_dir / "SKILL.md").read_text())
+    return {
+        "name": record.name,
+        "description": meta.get("description", ""),
+        "owner": catalog.owner,
+        "targets": list(record.targets),
+        "transform": record.transform,
+        "tree_hash": tree_hash(src_dir),
+        "source_commit": commit_hash,
+    }
+
+
+def build_lock(catalog: Catalog) -> dict:
+    commit_hash = None if catalog.external_source else git_commit_hash(catalog.catalog_path.parent)
+    return {
+        "schema": catalog.schema,
+        "owner": catalog.owner,
+        "skills": {r.name: compute_lock_entry(catalog, r, commit_hash=commit_hash) for r in catalog.skills},
+    }
+
+
+def load_lock(lock_path: Path) -> Optional[dict]:
+    lock_path = Path(lock_path)
+    if not lock_path.exists():
+        return None
+    return json.loads(lock_path.read_text())
+
+
+def check_lock_freshness(catalog: Catalog, lock: Optional[dict]) -> list[str]:
+    """Names whose current on-disk tree hash no longer matches the lock (or are unlocked)."""
+    if lock is None:
+        return [r.name for r in catalog.skills]
+    stale = []
+    for r in catalog.skills:
+        entry = (lock.get("skills") or {}).get(r.name)
+        if entry is None:
+            stale.append(r.name)
+            continue
+        if tree_hash(catalog.source_root / r.name) != entry.get("tree_hash"):
+            stale.append(r.name)
+    return stale
+
+
+# --- public safety handoff -----------------------------------------------------
+
+
+def public_safety_handoff(base_root: Path) -> None:
+    """Delegate to the base repo's own scanner. A no-op if the scanner isn't
+    present (e.g. an isolated test fixture without the full repo layout)."""
+    script = Path(base_root) / "scripts" / "check-public-safety.py"
+    if not script.exists():
+        return
+    proc = subprocess.run(
+        [sys.executable, str(script), "--root", str(base_root)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise SkillError(f"public safety scan failed:\n{proc.stdout}{proc.stderr}")
+
+
+# --- sync state machine ----------------------------------------------------------
+
+
+@dataclass
+class SyncState:
+    target: str
+    name: str
+    kind: str  # clean | create | recreate | update | conflict-target-drift | conflict-two-sided | unmanaged
+    staged: Path
+    generated_hash: str
+    catalog: Catalog
+    record: SkillRecord
+
+
+def compute_sync_states(
+    composed: ComposedCatalog, target_roots: dict[str, Path], ledger: dict, stage_root: Path
+) -> list[SyncState]:
+    states: list[SyncState] = []
+    for name, (catalog, record) in sorted(composed.skills.items()):
+        src_dir = catalog.source_root / name
+        for target in record.targets:
+            dest = target_roots[target] / name
+            key = ledger_key(target, name)
+            entry = ledger.get("targets", {}).get(key)
+            staged = stage_projection(src_dir, target, record.transform, stage_root)
+            generated_hash = tree_hash(staged)
+            dest_exists = dest.exists()
+            dest_hash = tree_hash(dest) if dest_exists else None
+
+            if entry is None:
+                kind = "unmanaged" if dest_exists else "create"
+            elif not dest_exists:
+                kind = "recreate"
+            else:
+                dest_matches_ledger = dest_hash == entry.get("target_hash")
+                source_changed = generated_hash != entry.get("generated_hash")
+                if not source_changed and dest_matches_ledger:
+                    kind = "clean"
+                elif source_changed and dest_matches_ledger:
+                    kind = "update"
+                elif not source_changed and not dest_matches_ledger:
+                    kind = "conflict-target-drift"
+                else:
+                    kind = "conflict-two-sided"
+
+            states.append(SyncState(
+                target=target, name=name, kind=kind, staged=staged,
+                generated_hash=generated_hash, catalog=catalog, record=record,
+            ))
+    return states
+
+
+def find_prune_candidates(
+    composed: ComposedCatalog, ledger: dict
+) -> list[tuple[str, str, dict]]:
+    """Ledger entries whose (target, name) is no longer declared by the composed catalog."""
+    live_keys = {
+        ledger_key(target, name)
+        for name, (_catalog, record) in composed.skills.items()
+        for target in record.targets
+    }
+    candidates = []
+    for key, entry in ledger.get("targets", {}).items():
+        if key in live_keys:
+            continue
+        target, _, name = key.partition(":")
+        candidates.append((target, name, entry))
+    return candidates
+
+
+# --- audit classifier --------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ObservedSkill:
+    name: str
+    origin: str  # "plugin" | "system" | "unmanaged"
+    tree_hash_value: str
+    enabled: bool = True
+    provider: str = ""
+
+
+def classify_inventory(manual: dict[str, str], observed: list[ObservedSkill]) -> dict:
+    """Classify manual/plugin/system/unmanaged Skills and detect collisions per
+    the plugin-overlap policy: manual/manual and manual/enabled-plugin same-name
+    overlap are hard failures; plugin/plugin identical content is reported
+    (precedence only), plugin/plugin divergent content is a hard failure."""
+    report: dict = {"manual": [], "plugin": [], "system": [], "unmanaged": [], "collisions": []}
+    by_name: dict[str, list[ObservedSkill]] = {}
+    for o in observed:
+        by_name.setdefault(o.name, []).append(o)
+
+    for name in sorted(set(manual) | set(by_name)):
+        is_manual = name in manual
+        if is_manual:
+            report["manual"].append({"name": name, "owner": manual[name]})
+        for o in by_name.get(name, []):
+            report[o.origin].append(
+                {"name": name, "origin": o.origin, "provider": o.provider, "enabled": o.enabled}
+            )
+        enabled_observed = [o for o in by_name.get(name, []) if o.enabled and o.origin != "unmanaged"]
+        if is_manual and enabled_observed:
+            report["collisions"].append({
+                "name": name, "kind": "manual-vs-plugin", "severity": "failure",
+                "detail": f"manual({manual[name]}) collides with enabled {enabled_observed[0].origin} provider(s)",
+            })
+        elif not is_manual and len(enabled_observed) >= 2:
+            hashes = {o.tree_hash_value for o in enabled_observed}
+            if len(hashes) == 1:
+                report["collisions"].append({
+                    "name": name, "kind": "plugin-plugin-identical", "severity": "info",
+                    "detail": f"identical content across {len(enabled_observed)} providers; "
+                              f"precedence: {enabled_observed[0].provider}",
+                })
+            else:
+                report["collisions"].append({
+                    "name": name, "kind": "plugin-plugin-divergent", "severity": "failure",
+                    "detail": f"{len(enabled_observed)} providers with divergent content for {name!r}",
+                })
+    return report
+
+
+def audit_exit_code(report: dict) -> int:
+    if any(c["severity"] == "failure" for c in report["collisions"]):
+        return 2
+    return 0
+
+
+def scan_unmanaged(target_roots: dict[str, Path], composed_names: set[str], ledger: dict) -> list[dict]:
+    found = []
+    for target, root in target_roots.items():
+        if not root.exists():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if child.name in composed_names:
+                continue
+            if ledger_key(target, child.name) in ledger.get("targets", {}):
+                continue
+            found.append({"target": target, "name": child.name})
+    return found
+
+
+def _print_audit_markdown(report: dict) -> None:
+    print("# skillsync audit\n")
+    print("## manual")
+    for e in report["manual"]:
+        meta = report.get("manual_meta", {}).get(e["name"], {})
+        print(f"- {e['name']} (owner={e['owner']}, chars={meta.get('chars', '?')}, "
+              f"est_tokens={meta.get('estimated_tokens', '?')})")
+    print("\n## unmanaged")
+    for e in report["unmanaged"]:
+        print(f"- {e['name']} ({e.get('target', '?')})")
+    print("\n## collisions")
+    for c in report["collisions"]:
+        print(f"- [{c['severity']}] {c['name']}: {c['detail']}")
+
+
+# --- CLI commands -------------------------------------------------------------
+
+
+def cmd_lock(args: argparse.Namespace) -> int:
+    base, overlay = load_profile_catalogs(
+        args.profile, args.base_root, args.overlay_root, work_root=args.work_root, require_sources=True
+    )
+    compose_profile(args.profile, base, overlay)  # raises on cross-owner name collisions
+    base_lock = build_lock(base)
+    overlay_lock = build_lock(overlay)
+    atomic_write_json(Path(args.base_root) / LOCK_FILENAME, base_lock)
+    atomic_write_json(Path(args.overlay_root) / LOCK_FILENAME, overlay_lock)
+    print(f"skillsync: locked {len(base.skills)} base skill(s), {len(overlay.skills)} overlay skill(s)")
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    base, overlay = load_profile_catalogs(
+        args.profile, args.base_root, args.overlay_root,
+        work_root=args.work_root, require_sources=args.require_sources,
+    )
+    compose_profile(args.profile, base, overlay)
+    public_safety_handoff(args.base_root)
+    resolve_target_roots(args.home, args.target_overrides)  # reserved-path checks
+
+    stale = list(check_lock_freshness(base, load_lock(Path(args.base_root) / LOCK_FILENAME)))
+    overlay_sources_validated = (overlay.owner != "work-managed") or args.require_sources
+    if overlay_sources_validated:
+        stale += check_lock_freshness(overlay, load_lock(Path(args.overlay_root) / LOCK_FILENAME))
+    if stale:
+        print(f"skillsync: stale lock(s): {sorted(stale)}", file=sys.stderr)
+        return 1
+    print("skillsync: check clean")
+    return 0
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    base, overlay = load_profile_catalogs(
+        args.profile, args.base_root, args.overlay_root, work_root=args.work_root, require_sources=True
+    )
+    composed = compose_profile(args.profile, base, overlay)
+    target_roots = resolve_target_roots(args.home, args.target_overrides)
+    ledger = load_ledger(args.state_root)
+    with tempfile.TemporaryDirectory(prefix="skillsync-diff-") as tmp:
+        states = compute_sync_states(composed, target_roots, ledger, Path(tmp))
+    non_clean = [s for s in states if s.kind != "clean"]
+    for s in non_clean:
+        print(f"skillsync: {s.kind} {s.target}/{s.name}")
+    if not non_clean:
+        print("skillsync: diff clean")
+        return 0
+    return 1
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    base, overlay = load_profile_catalogs(
+        args.profile, args.base_root, args.overlay_root, work_root=args.work_root, require_sources=True
+    )
+    composed = compose_profile(args.profile, base, overlay)
+    target_roots = resolve_target_roots(args.home, args.target_overrides)
+    state_root = Path(args.state_root)
+    state_root.mkdir(parents=True, exist_ok=True)
+    ledger = load_ledger(state_root)
+
+    applied: list[SyncState] = []
+    conflicts: list[SyncState] = []
+    unmanaged: list[SyncState] = []
+    with tempfile.TemporaryDirectory(prefix="skillsync-sync-", dir=str(state_root)) as tmp:
+        states = compute_sync_states(composed, target_roots, ledger, Path(tmp))
+        for s in states:
+            dest = target_roots[s.target] / s.name
+            if s.kind in ("create", "recreate", "update"):
+                source_label = source_label_for(s.catalog, s.name)
+                write_owner_stamp(
+                    s.staged, owner=s.catalog.owner, source=source_label,
+                    generated_hash=s.generated_hash, transform=s.record.transform,
+                )
+                atomic_replace_dir(dest, s.staged)
+                ledger["targets"][ledger_key(s.target, s.name)] = {
+                    "owner": s.catalog.owner, "source": source_label,
+                    "generated_hash": s.generated_hash, "target_hash": s.generated_hash,
+                    "transform": s.record.transform,
+                }
+                applied.append(s)
+            elif s.kind in ("conflict-target-drift", "conflict-two-sided"):
+                conflicts.append(s)
+            elif s.kind == "unmanaged":
+                unmanaged.append(s)
+            # kind == "clean": nothing to do.
+    save_ledger(state_root, ledger)
+
+    for s in applied:
+        print(f"skillsync: applied {s.kind} {s.target}/{s.name}")
+    for s in conflicts:
+        print(f"skillsync: conflict ({s.kind}) {s.target}/{s.name} — left untouched", file=sys.stderr)
+    for s in unmanaged:
+        print(f"skillsync: unmanaged {s.target}/{s.name} — run migrate to adopt", file=sys.stderr)
+    return 1 if (conflicts or unmanaged) else 0
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    base, overlay = load_profile_catalogs(
+        args.profile, args.base_root, args.overlay_root, work_root=args.work_root, require_sources=True
+    )
+    composed = compose_profile(args.profile, base, overlay)
+    target_roots = resolve_target_roots(args.home, args.target_overrides)
+    ledger = load_ledger(args.state_root)
+
+    adopted: list[SyncState] = []
+    refused: list[SyncState] = []
+    pruned: list[tuple[str, str]] = []
+    blocked_prune: list[tuple[str, str]] = []
+
+    with tempfile.TemporaryDirectory(prefix="skillsync-migrate-") as tmp:
+        states = compute_sync_states(composed, target_roots, ledger, Path(tmp))
+        for s in states:
+            if s.kind != "unmanaged":
+                continue
+            dest = target_roots[s.target] / s.name
+            if tree_hash(dest) == s.generated_hash:
+                adopted.append(s)
+                if args.apply:
+                    source_label = source_label_for(s.catalog, s.name)
+                    write_owner_stamp(
+                        dest, owner=s.catalog.owner, source=source_label,
+                        generated_hash=s.generated_hash, transform=s.record.transform,
+                    )
+                    ledger["targets"][ledger_key(s.target, s.name)] = {
+                        "owner": s.catalog.owner, "source": source_label,
+                        "generated_hash": s.generated_hash, "target_hash": s.generated_hash,
+                        "transform": s.record.transform,
+                    }
+            else:
+                refused.append(s)
+
+        for target, name, entry in find_prune_candidates(composed, ledger):
+            dest = target_roots[target] / name
+            if not dest.exists():
+                if args.apply:
+                    del ledger["targets"][ledger_key(target, name)]
+                continue
+            stamp = read_owner_stamp(dest)
+            dest_hash = tree_hash(dest)
+            if stamp and stamp.get("generated_hash") == entry.get("generated_hash") and dest_hash == entry.get("target_hash"):
+                pruned.append((target, name))
+                if args.apply:
+                    shutil.rmtree(dest)
+                    del ledger["targets"][ledger_key(target, name)]
+            else:
+                blocked_prune.append((target, name))
+
+    if args.apply:
+        save_ledger(args.state_root, ledger)
+
+    for s in adopted:
+        verb = "adopted" if args.apply else "would adopt"
+        print(f"skillsync: {verb} {s.target}/{s.name}")
+    for s in refused:
+        print(f"skillsync: refuse adopt {s.target}/{s.name} — on-disk content does not match catalog source",
+              file=sys.stderr)
+    for target, name in pruned:
+        verb = "pruned" if args.apply else "would prune"
+        print(f"skillsync: {verb} {target}/{name} (retired, stamped)")
+    for target, name in blocked_prune:
+        print(f"skillsync: blocked prune {target}/{name} — not stamped/matched, left untouched", file=sys.stderr)
+
+    if refused or blocked_prune:
+        return 1
+    if not args.apply and (adopted or pruned):
+        return 1
+    return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    base, overlay = load_profile_catalogs(
+        args.profile, args.base_root, args.overlay_root, work_root=args.work_root, require_sources=True
+    )
+    composed = compose_profile(args.profile, base, overlay)
+    target_roots = resolve_target_roots(args.home, args.target_overrides)
+    ledger = load_ledger(args.state_root)
+
+    manual: dict[str, str] = {}
+    manual_meta: dict[str, dict] = {}
+    for name, (catalog, _record) in composed.skills.items():
+        meta, _ = split_frontmatter((catalog.source_root / name / "SKILL.md").read_text())
+        desc = str(meta.get("description") or "")
+        manual[name] = catalog.owner
+        manual_meta[name] = {"chars": len(desc), "estimated_tokens": round(len(desc) / 4)}
+
+    # Plugin/system introspection (real registries, caches, enabled state) is
+    # Task 6's job; this builds the classifier and wires the "unmanaged"
+    # physical scan that Task 2 owns.
+    report = classify_inventory(manual, [])
+    report["manual_meta"] = manual_meta
+    for u in scan_unmanaged(target_roots, set(manual), ledger):
+        report["unmanaged"].append({"name": u["name"], "origin": "unmanaged", "target": u["target"]})
+
+    if args.format == "json":
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        _print_audit_markdown(report)
+    return audit_exit_code(report)
+
+
+COMMAND_HANDLERS = {
+    "lock": cmd_lock,
+    "check": cmd_check,
+    "audit": cmd_audit,
+    "diff": cmd_diff,
+    "sync": cmd_sync,
+    "migrate": cmd_migrate,
+}
+
+
+# --- CLI wiring -------------------------------------------------------------------
+
+
+def _parse_target_root_overrides(items: list[str]) -> dict[str, Path]:
+    overrides: dict[str, Path] = {}
+    for item in items:
+        if "=" not in item:
+            raise SkillError(f"invalid --target-root {item!r}, expected NAME=PATH")
+        name, _, value = item.partition("=")
+        if name not in VALID_TARGETS:
+            raise SkillError(f"invalid --target-root name {name!r}, expected one of {sorted(VALID_TARGETS)}")
+        overrides[name] = Path(value)
+    return overrides
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="skillsync",
+        description="Compose owned Skill catalogs and materialize them across AI harnesses.",
+    )
+    sub = ap.add_subparsers(dest="command", required=True)
+    for name in ("lock", "check", "audit", "diff", "sync", "migrate"):
+        sp = sub.add_parser(name)
+        sp.add_argument("--profile", choices=("personal", "work"), required=True)
+        sp.add_argument("--base-root", type=Path, required=True)
+        sp.add_argument("--overlay-root", type=Path, required=True)
+        sp.add_argument("--work-root", type=Path, default=None)
+        sp.add_argument("--home", type=Path, default=Path.home())
+        sp.add_argument("--state-root", type=Path, default=None)
+        sp.add_argument("--target-root", action="append", default=[], metavar="NAME=PATH")
+        if name == "check":
+            sp.add_argument("--require-sources", action="store_true")
+        if name == "audit":
+            sp.add_argument("--format", choices=("json", "markdown"), default="json")
+        if name == "sync":
+            sp.add_argument("--non-interactive", action="store_true")
+        if name == "migrate":
+            sp.add_argument("--apply", action="store_true")
+        sp.set_defaults(func=COMMAND_HANDLERS[name])
+    return ap
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = build_arg_parser()
+    args = ap.parse_args(argv)
+    if args.state_root is None:
+        args.state_root = args.home / ".local" / "state" / "skillsync"
+    try:
+        args.target_overrides = _parse_target_root_overrides(args.target_root)
+        return args.func(args)
+    except SkillError as exc:
+        print(f"skillsync: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
