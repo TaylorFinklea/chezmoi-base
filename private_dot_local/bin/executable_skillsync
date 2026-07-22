@@ -752,13 +752,234 @@ class ObservedSkill:
     tree_hash_value: str
     enabled: bool = True
     provider: str = ""
+    state: str = "active"
+    owner: str = ""
+    adapter: str = ""
+
+
+def _read_json_file(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _runtime_path(home: Path, base: Path, value) -> Optional[Path]:
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith("~/"):
+        return home / value[2:]
+    candidate = Path(value)
+    return candidate if candidate.is_absolute() else base / candidate
+
+
+def _plugin_paths(value, home: Path, base: Path) -> list[Path]:
+    entries = value if isinstance(value, list) else [value]
+    paths = []
+    for entry in entries:
+        if isinstance(entry, str):
+            path = _runtime_path(home, base, entry)
+        elif isinstance(entry, dict):
+            path = _runtime_path(home, base, entry.get("installPath") or entry.get("install_path") or entry.get("path"))
+        else:
+            path = None
+        if path is not None:
+            paths.append(path)
+    return paths
+
+
+def _skill_observations(root: Path, *, provider: str, adapter: str, enabled: bool,
+                        state: str = "active", origin: str = "plugin",
+                        owner: str = "") -> list[ObservedSkill]:
+    skills_root = root / "skills" if (root / "skills").is_dir() else root
+    if not skills_root.is_dir():
+        return []
+    observed = []
+    for skill_file in sorted(skills_root.rglob("SKILL.md")):
+        skill_dir = skill_file.parent
+        meta, _ = split_frontmatter(skill_file.read_text())
+        name = str(meta.get("name") or skill_dir.name)
+        observed.append(ObservedSkill(
+            name=name, origin=origin, tree_hash_value=tree_hash(skill_dir), enabled=enabled,
+            provider=provider, state=state, owner=owner, adapter=adapter,
+        ))
+    return observed
+
+
+def _configured_plugins(value) -> dict[str, bool]:
+    if isinstance(value, dict):
+        return {str(name): (entry if isinstance(entry, bool) else bool(entry.get("enabled", True))
+                            if isinstance(entry, dict) else True)
+                for name, entry in value.items()}
+    configured = {}
+    if isinstance(value, list):
+        for entry in value:
+            if isinstance(entry, str):
+                configured[entry] = True
+            elif isinstance(entry, dict) and entry.get("id"):
+                configured[str(entry["id"])] = bool(entry.get("enabled", True))
+    return configured
+
+
+def _configured_plugin_entries(value) -> list[tuple[str, bool, Optional[str]]]:
+    if isinstance(value, dict):
+        entries = []
+        for name, item in value.items():
+            if isinstance(item, dict):
+                entries.append((str(name), bool(item.get("enabled", True)), item.get("path") or item.get("install_path")))
+            else:
+                entries.append((str(name), bool(item) if isinstance(item, bool) else True, None))
+        return entries
+    entries = []
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                entries.append((item, True, None))
+            elif isinstance(item, dict) and item.get("id"):
+                entries.append((str(item["id"]), bool(item.get("enabled", True)),
+                                item.get("path") or item.get("install_path")))
+    return entries
+
+
+def _configured_runtime_plugins(home: Path, *, adapter: str, config_path: Path,
+                                config_key: str, install_base: Path) -> tuple[list[ObservedSkill], list[dict]]:
+    config = _read_json_file(config_path)
+    observed: list[ObservedSkill] = []
+    issues: list[dict] = []
+    for provider, enabled, raw_path in _configured_plugin_entries(config.get(config_key)):
+        root = _runtime_path(home, install_base, raw_path) if raw_path else install_base / provider
+        if root and root.is_dir():
+            observed.extend(_skill_observations(root, provider=provider, adapter=adapter, enabled=enabled,
+                                                state="active" if enabled else "disabled"))
+        elif enabled:
+            issues.append({"adapter": adapter, "provider": provider, "state": "missing-active-install"})
+    return observed, issues
+
+
+def _claude_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
+    root = home / ".claude"
+    settings = _read_json_file(root / "settings.json")
+    enabled = _configured_plugins(settings.get("enabledPlugins"))
+    registry = _read_json_file(root / "plugins" / "installed_plugins.json").get("plugins", {})
+    observed: list[ObservedSkill] = []
+    issues: list[dict] = []
+    for provider, is_enabled in sorted(enabled.items()):
+        paths = _plugin_paths(registry.get(provider), home, root / "plugins") if isinstance(registry, dict) else []
+        if not paths:
+            paths = [root / "plugins" / provider]
+        found = False
+        for path in paths:
+            if path.is_dir():
+                found = True
+                observed.extend(_skill_observations(path, provider=provider, adapter="claude",
+                                                    enabled=is_enabled,
+                                                    state="active" if is_enabled else "disabled"))
+        if is_enabled and not found:
+            issues.append({"adapter": "claude", "provider": provider, "state": "missing-active-install"})
+    return observed, issues
+
+
+def _codex_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
+    root = home / ".codex"
+    config_path = root / "config.toml"
+    config = tomllib.loads(config_path.read_text()) if config_path.is_file() else {}
+    enabled = _configured_plugins(config.get("plugins", {}))
+    plugins_root = root / "plugins"
+    registry = _read_json_file(plugins_root / "installed_plugins.json")
+    observed: list[ObservedSkill] = []
+    issues: list[dict] = []
+    active_paths: set[Path] = set()
+    for provider, is_enabled in sorted(enabled.items()):
+        paths = _plugin_paths(registry.get(provider), home, plugins_root)
+        if not paths:
+            paths = [plugins_root / provider]
+        found = False
+        for path in paths:
+            if path.is_dir():
+                found = True
+                active_paths.add(path.resolve())
+                observed.extend(_skill_observations(path, provider=provider, adapter="codex",
+                                                    enabled=is_enabled,
+                                                    state="active" if is_enabled else "disabled"))
+        if is_enabled and not found:
+            issues.append({"adapter": "codex", "provider": provider, "state": "missing-active-install"})
+
+    cache_root = plugins_root / "cache"
+    if cache_root.is_dir():
+        for skill_file in sorted(cache_root.rglob("SKILL.md")):
+            skill_root = skill_file.parent
+            if any(parent in active_paths for parent in (skill_root, *skill_root.parents)):
+                continue
+            rel = skill_file.relative_to(cache_root)
+            provider = rel.parts[0] if rel.parts else "codex-cache"
+            is_disabled = provider in enabled and not enabled[provider]
+            observed.extend(_skill_observations(
+                skill_root, provider=provider, adapter="codex", enabled=False,
+                state="disabled" if is_disabled else "runtime-cache-only",
+            ))
+
+    for skill_file in sorted((root / "skills" / ".system").glob("*/SKILL.md")):
+        observed.extend(_skill_observations(skill_file.parent, provider="codex-system", adapter="codex",
+                                            enabled=True, origin="system", owner="harness-system"))
+    return observed, issues
+
+
+def _yaml_runtime_plugins(home: Path, *, adapter: str, config_path: Path, install_base: Path,
+                          use_omp_precedence: bool = False) -> tuple[list[ObservedSkill], list[dict]]:
+    if not config_path.is_file():
+        return [], []
+    value = yaml.safe_load(config_path.read_text()) or {}
+    packages = value.get("packages") if isinstance(value, dict) else None
+    observed: list[ObservedSkill] = []
+    issues: list[dict] = []
+    for provider, enabled, raw_path in _configured_plugin_entries(packages):
+        root = _runtime_path(home, install_base, raw_path) if raw_path else install_base / provider
+        if root and root.is_dir():
+            observed.extend(_skill_observations(
+                root, provider=provider, adapter=adapter, enabled=enabled,
+                state="active" if enabled else "disabled",
+            ))
+        elif enabled:
+            issues.append({"adapter": adapter, "provider": provider, "state": "missing-active-install"})
+    return observed, issues
+
+
+def collect_runtime_inventory(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
+    """Read only the supplied isolated runtime tree; adapters classify, never copy."""
+    home = Path(home)
+    observed: list[ObservedSkill] = []
+    issues: list[dict] = []
+    for adapter in (_claude_runtime, _codex_runtime):
+        entries, adapter_issues = adapter(home)
+        observed.extend(entries)
+        issues.extend(adapter_issues)
+    for adapter, config, key, base in (
+        ("opencode", home / ".config" / "opencode" / "opencode.json", "plugins",
+         home / ".config" / "opencode"),
+        ("pi", home / ".pi" / "agent" / "settings.json", "packages", home / ".pi" / "agent"),
+        ("pi", home / ".pi" / "agent" / "settings.json", "extensions", home / ".pi" / "agent"),
+        ("copilot", home / ".copilot" / "config.json", "plugins", home / ".copilot"),
+        ("copilot", home / ".copilot" / "config.json", "skillRoots", home / ".copilot"),
+    ):
+        entries, adapter_issues = _configured_runtime_plugins(
+            home, adapter=adapter, config_path=config, config_key=key, install_base=base
+        )
+        observed.extend(entries)
+        issues.extend(adapter_issues)
+    entries, adapter_issues = _yaml_runtime_plugins(
+        home, adapter="omp", config_path=home / ".omp" / "agent" / "config.yml",
+        install_base=home / ".omp" / "agent",
+    )
+    observed.extend(entries)
+    issues.extend(adapter_issues)
+    return sorted(observed, key=lambda item: (item.name, item.provider, item.adapter, item.state)), sorted(
+        issues, key=lambda item: (item["adapter"], item["provider"])
+    )
 
 
 def classify_inventory(manual: dict[str, str], observed: list[ObservedSkill]) -> dict:
-    """Classify manual/plugin/system/unmanaged Skills and detect collisions per
-    the plugin-overlap policy: manual/manual and manual/enabled-plugin same-name
-    overlap are hard failures; plugin/plugin identical content is reported
-    (precedence only), plugin/plugin divergent content is a hard failure."""
+    """Classify manual/plugin/system/unmanaged Skills and enforce owner overlap policy."""
     report: dict = {"manual": [], "plugin": [], "system": [], "unmanaged": [], "collisions": []}
     by_name: dict[str, list[ObservedSkill]] = {}
     for o in observed:
@@ -768,11 +989,15 @@ def classify_inventory(manual: dict[str, str], observed: list[ObservedSkill]) ->
         is_manual = name in manual
         if is_manual:
             report["manual"].append({"name": name, "owner": manual[name]})
-        for o in by_name.get(name, []):
+        for o in sorted(by_name.get(name, []), key=lambda item: (item.provider, item.adapter, item.state)):
             report[o.origin].append(
-                {"name": name, "origin": o.origin, "provider": o.provider, "enabled": o.enabled}
+                {"name": name, "origin": o.origin, "provider": o.provider, "enabled": o.enabled,
+                 "state": o.state, "owner": o.owner, "adapter": o.adapter}
             )
-        enabled_observed = [o for o in by_name.get(name, []) if o.enabled and o.origin != "unmanaged"]
+        enabled_observed = sorted(
+            (o for o in by_name.get(name, []) if o.enabled and o.origin != "unmanaged"),
+            key=lambda item: (item.provider, item.adapter),
+        )
         if is_manual and enabled_observed:
             report["collisions"].append({
                 "name": name, "kind": "manual-vs-plugin", "severity": "failure",
@@ -780,11 +1005,12 @@ def classify_inventory(manual: dict[str, str], observed: list[ObservedSkill]) ->
             })
         elif not is_manual and len(enabled_observed) >= 2:
             hashes = {o.tree_hash_value for o in enabled_observed}
+            winner = enabled_observed[0].provider
             if len(hashes) == 1:
                 report["collisions"].append({
                     "name": name, "kind": "plugin-plugin-identical", "severity": "info",
-                    "detail": f"identical content across {len(enabled_observed)} providers; "
-                              f"precedence: {enabled_observed[0].provider}",
+                    "winner": winner,
+                    "detail": f"identical content across {len(enabled_observed)} providers; precedence: {winner}",
                 })
             else:
                 report["collisions"].append({
@@ -796,6 +1022,8 @@ def classify_inventory(manual: dict[str, str], observed: list[ObservedSkill]) ->
 
 def audit_exit_code(report: dict) -> int:
     if any(c["severity"] == "failure" for c in report["collisions"]):
+        return 2
+    if report.get("strict_runtime") and report.get("runtime_issues"):
         return 2
     return 0
 
@@ -823,6 +1051,9 @@ def _print_audit_markdown(report: dict) -> None:
         meta = report.get("manual_meta", {}).get(e["name"], {})
         print(f"- {e['name']} (owner={e['owner']}, chars={meta.get('chars', '?')}, "
               f"est_tokens={meta.get('estimated_tokens', '?')})")
+    print("\n## runtime")
+    for e in report.get("runtime_issues", []):
+        print(f"- [{e['state']}] {e['adapter']}/{e['provider']}")
     print("\n## unmanaged")
     for e in report["unmanaged"]:
         print(f"- {e['name']} ({e.get('target', '?')})")
@@ -1027,11 +1258,11 @@ def cmd_audit(args: argparse.Namespace) -> int:
         manual[name] = catalog.owner
         manual_meta[name] = {"chars": len(desc), "estimated_tokens": round(len(desc) / 4)}
 
-    # Plugin/system introspection (real registries, caches, enabled state) is
-    # Task 6's job; this builds the classifier and wires the "unmanaged"
-    # physical scan that Task 2 owns.
-    report = classify_inventory(manual, [])
+    observed, runtime_issues = collect_runtime_inventory(args.home)
+    report = classify_inventory(manual, observed)
     report["manual_meta"] = manual_meta
+    report["runtime_issues"] = runtime_issues
+    report["strict_runtime"] = args.strict_runtime
     for u in scan_unmanaged(target_roots, set(manual), ledger):
         report["unmanaged"].append({"name": u["name"], "origin": "unmanaged", "target": u["target"]})
 
@@ -1086,6 +1317,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             sp.add_argument("--require-sources", action="store_true")
         if name == "audit":
             sp.add_argument("--format", choices=("json", "markdown"), default="json")
+            sp.add_argument("--strict-runtime", action="store_true")
         if name == "sync":
             sp.add_argument("--non-interactive", action="store_true")
         if name == "migrate":

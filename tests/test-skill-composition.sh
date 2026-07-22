@@ -695,6 +695,43 @@ assert_empty_file "$tmp/work-migrate-idempotent.err" 'second work migration stde
 assert_projection_contract work "$work_migration_home" "$work_migration_state" "$work_overlay" \
   "$personal_overlay" 36 32 32 0
 
+# Render OMP and Codex configuration into an isolated HOME.  The checks use
+# native CLI configuration metadata rather than asking a model to enumerate Skills.
+omp_home="$tmp/omp-runtime-home"
+mkdir -p "$omp_home/.omp/agent" "$omp_home/.codex"
+chezmoi --source "$repo_root" --destination "$omp_home" execute-template \
+  --file "$repo_root/dot_omp/agent/config.yml.tmpl" > "$omp_home/.omp/agent/config.yml"
+HOME="$omp_home" XDG_CONFIG_HOME="$omp_home/.config" XDG_STATE_HOME="$omp_home/.state" \
+  omp --version > "$tmp/omp-version.out"
+HOME="$omp_home" XDG_CONFIG_HOME="$omp_home/.config" XDG_STATE_HOME="$omp_home/.state" \
+  omp config list --json > "$tmp/omp-config.json"
+run_python "$tmp/omp-config.json" <<'PY'
+import json
+import sys
+
+config = json.loads(open(sys.argv[1]).read())
+expected = {
+    "skills.enableClaudeUser": True,
+    "skills.enableAgentsUser": False,
+    "skills.enableCodexUser": False,
+    "skills.enablePiUser": False,
+}
+actual = {key: config[key].get("value") for key in expected}
+if actual != expected:
+    raise SystemExit(f"unexpected OMP Skill provider settings: {actual!r}")
+if config["skills.includeSkills"].get("value") != []:
+    raise SystemExit("OMP includeSkills must remain unset")
+PY
+CHEZMOI_AI_PROFILE=personal chezmoi --source "$personal_overlay" --destination "$omp_home" execute-template \
+  --file "$personal_overlay/.chezmoitemplates/codex/plugins.toml" > "$omp_home/.codex/config.toml"
+if grep -Fq 'codex-forge@local-managed' "$omp_home/.codex/config.toml" ||
+   grep -Fq '[marketplaces.local-managed]' "$omp_home/.codex/config.toml"; then
+  fail 'isolated Codex config retained unresolved Forge marketplace'
+fi
+HOME="$omp_home" XDG_CONFIG_HOME="$omp_home/.config" XDG_STATE_HOME="$omp_home/.state" \
+  codex plugin list > "$tmp/codex-plugin-list.out" 2> "$tmp/codex-plugin-list.err" ||
+  fail 'isolated Codex plugin listing should succeed'
+
 printf 'test-skill-composition: metrics legacy_projections=%s final_projections=%s legacy_names=%s final_names=%s metadata_before=%s metadata_after=%s legacy_collisions=%s final_collisions=0\n' \
   "$legacy_physical" "$after_physical" "$legacy_distinct" "$after_distinct" "$before_metadata" "$after_metadata" "$legacy_collisions"
 printf 'test-skill-composition: all assertions passed\n'

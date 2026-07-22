@@ -1,6 +1,81 @@
 import json
+import shutil
+
 
 from .conftest import make_base_repo, make_personal_repo
+from pathlib import Path
+
+
+RUNTIME_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "runtime-audit"
+
+
+def runtime_home(name: str) -> Path:
+    return RUNTIME_FIXTURES / name / "home"
+
+
+def test_runtime_inventory_marks_disabled_plugin_non_effective(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("disabled-plugin"))
+    plugin = next(item for item in observed if item.name == "disabled-skill")
+    assert plugin.enabled is False
+    assert plugin.state == "disabled"
+    assert issues == []
+
+
+def test_runtime_inventory_marks_unselected_cache_runtime_cache_only(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("stale-cache"))
+    active = next(item for item in observed if item.name == "active-skill")
+    stale = next(item for item in observed if item.name == "stale-skill")
+    assert active.enabled is True
+    assert stale.enabled is False
+    assert stale.state == "runtime-cache-only"
+    assert issues == []
+
+
+def test_runtime_inventory_reports_missing_enabled_install(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("missing-active-install"))
+    assert observed == []
+    assert issues == [{
+        "adapter": "codex",
+        "provider": "missing@fixture",
+        "state": "missing-active-install",
+    }]
+
+
+def test_runtime_inventory_uses_deterministic_precedence_for_identical_plugins(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("identical-plugins"))
+    report = ss.classify_inventory({}, observed)
+    collision = report["collisions"][0]
+    assert collision["kind"] == "plugin-plugin-identical"
+    assert collision["winner"] == "alpha@fixture"
+    assert issues == []
+
+
+def test_runtime_inventory_fails_for_divergent_plugins(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("divergent-plugins"))
+    report = ss.classify_inventory({}, observed)
+    assert report["collisions"][0]["kind"] == "plugin-plugin-divergent"
+    assert ss.audit_exit_code(report) == 2
+    assert issues == []
+
+
+def test_runtime_inventory_fails_for_manual_plugin_collision(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("manual-plugin-collision"))
+    report = ss.classify_inventory({"manual-skill": "base-managed"}, observed)
+    assert report["collisions"][0]["kind"] == "manual-vs-plugin"
+    assert ss.audit_exit_code(report) == 2
+    assert issues == []
+
+
+def test_runtime_inventory_adapters_cover_all_runtime_sources_and_system_skills(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("identical-plugins"))
+    providers = {item.provider for item in observed}
+    assert {"alpha@fixture", "beta@fixture", "opencode@fixture", "pi@fixture",
+            "pi-extension@fixture", "omp@fixture", "copilot@fixture",
+            "copilot-root@fixture"} <= providers
+    systems = {item.name: item.owner for item in observed if item.origin == "system"}
+    assert systems == {"imagegen": "harness-system", "openai-docs": "harness-system"}
+    assert issues == []
+
 
 
 def test_classify_inventory_manual_only_is_clean(ss):
@@ -90,6 +165,18 @@ def test_cmd_audit_json_reports_manual_and_metadata(ss, tmp_path):
         "--home", str(tmp_path / "home"), "--state-root", str(tmp_path / "state"), "--format", "json",
     ])
     assert rc == 0
+
+
+def test_cmd_audit_strict_runtime_rejects_missing_enabled_install(ss, tmp_path):
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native"])
+    home = tmp_path / "home"
+    shutil.copytree(runtime_home("missing-active-install"), home)
+    rc = ss.main([
+        "audit", "--profile", "personal", "--base-root", str(base), "--overlay-root", str(personal),
+        "--home", str(home), "--state-root", str(tmp_path / "state"), "--strict-runtime", "--format", "json",
+    ])
+    assert rc == 2
 
 
 def test_cmd_audit_markdown_format_smoke(ss, tmp_path, capsys):
