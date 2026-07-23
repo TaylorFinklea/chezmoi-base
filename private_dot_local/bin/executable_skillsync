@@ -757,9 +757,50 @@ class ObservedSkill:
     adapter: str = ""
 
 
+def _strip_jsonc_comments(source: str) -> str:
+    """Remove JSONC comments without touching comment-like text inside strings."""
+    result: list[str] = []
+    index = 0
+    quote = ""
+    escaped = False
+    while index < len(source):
+        char = source[index]
+        if quote:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in ('"', "'"):
+            quote = char
+            result.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < len(source):
+            next_char = source[index + 1]
+            if next_char == "/":
+                index = source.find("\n", index)
+                if index < 0:
+                    break
+                result.append("\n")
+                index += 1
+                continue
+            if next_char == "*":
+                end = source.find("*/", index + 2)
+                index = len(source) if end < 0 else end + 2
+                continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
 def _read_json_file(path: Path) -> dict:
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(_strip_jsonc_comments(path.read_text()))
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -856,6 +897,142 @@ def _configured_runtime_plugins(home: Path, *, adapter: str, config_path: Path,
             issues.append({"adapter": adapter, "provider": provider, "state": "missing-active-install"})
     return observed, issues
 
+
+def _pi_git_install_path(agent_dir: Path, source: str) -> Optional[Path]:
+    """Mirror Pi's user-scope git package identity: <agent>/git/<host>/<path>."""
+    value = source.removeprefix("git:").strip().split("#", 1)[0]
+    if not value:
+        return None
+    if "://" in value:
+        match = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", value, re.I)
+    else:
+        match = re.match(r"^(?:[^@/]+@)?([^/:]+)[:/](.+)$", value)
+    if not match:
+        return None
+    host, path = match.groups()
+    path = path.rstrip("/")
+    if "@" in path:
+        path = path.rsplit("@", 1)[0]
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = tuple(part for part in path.split("/") if part)
+    if not host or not parts or any(part in {".", ".."} for part in parts):
+        return None
+    return agent_dir / "git" / host / Path(*parts)
+
+
+def _pi_package_entries(value) -> list[tuple[str, bool, Optional[str]]]:
+    entries = []
+    if not isinstance(value, list):
+        return entries
+    for item in value:
+        if isinstance(item, str):
+            entries.append((item, True, item))
+        elif isinstance(item, dict):
+            source = item.get("source")
+            if isinstance(source, str):
+                entries.append((source, bool(item.get("enabled", True)), source))
+            elif item.get("id"):
+                entries.append((str(item["id"]), bool(item.get("enabled", True)),
+                                item.get("path") or item.get("install_path")))
+    return entries
+
+
+def _pi_package_install_path(home: Path, agent_dir: Path, source: str) -> Optional[Path]:
+    if source.startswith("npm:"):
+        spec = source.removeprefix("npm:").strip()
+        match = re.match(r"^(@?[^@/]+(?:/[^@/]+)?)(?:@.+)?$", spec)
+        return agent_dir / "npm" / "node_modules" / match.group(1) if match else None
+    if source.startswith("git:"):
+        return _pi_git_install_path(agent_dir, source)
+    return _runtime_path(home, agent_dir, source)
+
+
+def _pi_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
+    agent_dir = home / ".pi" / "agent"
+    config = _read_json_file(agent_dir / "settings.json")
+    observed: list[ObservedSkill] = []
+    issues: list[dict] = []
+    for provider, enabled, source in _pi_package_entries(config.get("packages")):
+        root = _pi_package_install_path(home, agent_dir, source) if source else None
+        if root and root.is_dir():
+            observed.extend(_skill_observations(root, provider=provider, adapter="pi", enabled=enabled,
+                                                state="active" if enabled else "disabled"))
+        elif enabled:
+            issues.append({"adapter": "pi", "provider": provider, "state": "missing-active-install"})
+    extensions, extension_issues = _configured_runtime_plugins(
+        home, adapter="pi", config_path=agent_dir / "settings.json",
+        config_key="extensions", install_base=agent_dir,
+    )
+    observed.extend(extensions)
+    issues.extend(extension_issues)
+    return observed, issues
+
+
+def _opencode_plugin_name(specifier: str) -> Optional[str]:
+    source = specifier.removeprefix("npm:").strip()
+    if source.startswith("@"):
+        slash = source.find("/")
+        version = source.find("@", slash + 1) if slash >= 0 else -1
+        return source if version < 0 else source[:version]
+    if source and not source.startswith(("file:", "git+", "github:", "http:", "https:")):
+        return source.split("@", 1)[0]
+    return None
+
+
+def _opencode_plugin_paths(home: Path, config_dir: Path, specifier: str) -> list[Path]:
+    if specifier.startswith("file:"):
+        root = _runtime_path(home, config_dir, specifier.removeprefix("file:"))
+        return [root] if root is not None else []
+    if specifier.startswith(("./", "../", "~/", "/")):
+        root = _runtime_path(home, config_dir, specifier)
+        return [root] if root is not None else []
+
+    cache = home / ".cache" / "opencode" / "packages" / specifier
+    names = {_opencode_plugin_name(specifier)}
+    manifest = _read_json_file(cache / "package.json")
+    dependencies = manifest.get("dependencies")
+    if isinstance(dependencies, dict):
+        names.update(name for name in dependencies if isinstance(name, str))
+    roots = [cache] if (cache / "skills").is_dir() else []
+    roots.extend(cache / "node_modules" / name for name in names if name)
+    return roots
+
+
+def _opencode_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
+    config_dir = home / ".config" / "opencode"
+    config = _read_json_file(config_dir / "opencode.json")
+    observed: list[ObservedSkill] = []
+    issues: list[dict] = []
+    active_roots: set[Path] = set()
+    for provider, enabled, raw_path in _configured_plugin_entries(config.get("plugin")):
+        roots = ([_runtime_path(home, config_dir, raw_path)] if raw_path
+                 else _opencode_plugin_paths(home, config_dir, provider))
+        found = False
+        for root in roots:
+            if root and root.is_dir():
+                found = True
+                active_roots.add(root.resolve())
+                observed.extend(_skill_observations(
+                    root, provider=provider, adapter="opencode", enabled=enabled,
+                    state="active" if enabled else "disabled",
+                ))
+        if enabled and not found:
+            issues.append({"adapter": "opencode", "provider": provider, "state": "missing-active-install"})
+
+    cache_root = home / ".cache" / "opencode" / "packages"
+    if cache_root.is_dir():
+        for skill_file in sorted(cache_root.rglob("SKILL.md")):
+            skill_root = skill_file.parent
+            if any(root in (skill_root, *skill_root.parents) for root in active_roots):
+                continue
+            relative = skill_file.relative_to(cache_root)
+            provider = relative.parts[0] if relative.parts else "opencode-cache"
+            observed.extend(_skill_observations(
+                skill_root, provider=provider, adapter="opencode", enabled=False,
+                state="runtime-cache-only",
+            ))
+    return observed, issues
 
 def _claude_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
     root = home / ".claude"
@@ -954,16 +1131,14 @@ def collect_runtime_inventory(home: Path) -> tuple[list[ObservedSkill], list[dic
         entries, adapter_issues = adapter(home)
         observed.extend(entries)
         issues.extend(adapter_issues)
-    for adapter, config, key, base in (
-        ("opencode", home / ".config" / "opencode" / "opencode.json", "plugins",
-         home / ".config" / "opencode"),
-        ("pi", home / ".pi" / "agent" / "settings.json", "packages", home / ".pi" / "agent"),
-        ("pi", home / ".pi" / "agent" / "settings.json", "extensions", home / ".pi" / "agent"),
-        ("copilot", home / ".copilot" / "config.json", "plugins", home / ".copilot"),
-        ("copilot", home / ".copilot" / "config.json", "skillRoots", home / ".copilot"),
-    ):
+    for adapter in (_opencode_runtime, _pi_runtime):
+        entries, adapter_issues = adapter(home)
+        observed.extend(entries)
+        issues.extend(adapter_issues)
+    for key in ("plugins", "skillRoots"):
         entries, adapter_issues = _configured_runtime_plugins(
-            home, adapter=adapter, config_path=config, config_key=key, install_base=base
+            home, adapter="copilot", config_path=home / ".copilot" / "config.json",
+            config_key=key, install_base=home / ".copilot",
         )
         observed.extend(entries)
         issues.extend(adapter_issues)

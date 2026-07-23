@@ -1,1 +1,1 @@
-{"plugins": [{"id": "opencode@fixture", "path": "plugins/opencode"}]}
+{"plugin": ["opencode@fixture"]}

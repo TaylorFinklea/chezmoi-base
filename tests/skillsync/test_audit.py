@@ -76,6 +76,39 @@ def test_runtime_inventory_adapters_cover_all_runtime_sources_and_system_skills(
     assert systems == {"imagegen": "harness-system", "openai-docs": "harness-system"}
     assert issues == []
 
+def test_runtime_inventory_resolves_real_pi_and_opencode_specifiers(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("runtime-package-specifiers"))
+    providers = {item.provider for item in observed}
+    assert {
+        "git:github.com/obra/superpowers",
+        "npm:pi-skillful",
+        "../../git/computer-use-sidecar",
+        "superpowers@git+https://github.com/obra/superpowers.git",
+        "opencode-npm-plugin@1.2.3",
+    } <= providers
+    stale = next(item for item in observed if item.name == "opencode-stale-skill")
+    assert stale.state == "runtime-cache-only"
+    assert issues == []
+
+
+def test_runtime_inventory_reports_missing_real_pi_and_opencode_specifiers(ss, tmp_path):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("missing-runtime-package-specifiers"))
+    assert observed == []
+    assert issues == [
+        {"adapter": "opencode", "provider": "superpowers@git+https://github.com/obra/superpowers.git",
+         "state": "missing-active-install"},
+        {"adapter": "pi", "provider": "npm:pi-web-access", "state": "missing-active-install"},
+    ]
+
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native"])
+    rc = ss.main([
+        "audit", "--profile", "personal", "--base-root", str(base), "--overlay-root", str(personal),
+        "--home", str(runtime_home("missing-runtime-package-specifiers")),
+        "--state-root", str(tmp_path / "state"), "--strict-runtime", "--format", "json",
+    ])
+    assert rc == 2
+
 
 
 def test_classify_inventory_manual_only_is_clean(ss):

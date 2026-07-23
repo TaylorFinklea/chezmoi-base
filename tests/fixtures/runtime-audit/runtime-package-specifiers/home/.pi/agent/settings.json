@@ -1,0 +1,7 @@
+{
+  "packages": [
+    "git:github.com/obra/superpowers",
+    "npm:pi-skillful",
+    "../../git/computer-use-sidecar"
+  ]
+}
