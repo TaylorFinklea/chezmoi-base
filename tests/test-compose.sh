@@ -59,18 +59,31 @@ assert_read_only_execution() {
   role=$2
   overlay=$3
   expected_calls="$tmp/$subcommand-$role.expected"
+  local skill_work expected_skill_check expected_skill_diff
+
+  case "$role" in
+    work) skill_work=$tmp/work ;;
+    *) skill_work= ;;
+  esac
+  expected_skill_check="skillsync:check:profile=$role:base=$tmp/base:overlay=$overlay:work=$skill_work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0"
+  expected_skill_diff="skillsync:diff:profile=$role:base=$tmp/base:overlay=$overlay:work=$skill_work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0"
+
 
   : > "$call_log"
   if ! run_compose "$subcommand" "$role"; then
     fail "$subcommand $role should succeed"
   fi
 
-  cat > "$expected_calls" <<EOF
-managed:$tmp/base
-managed:$overlay
-$subcommand:$tmp/base
-$subcommand:$overlay
-EOF
+  {
+    printf 'managed:%s\n' "$tmp/base"
+    printf 'managed:%s\n' "$overlay"
+    printf '%s\n' "$expected_skill_check"
+    printf '%s:%s\n' "$subcommand" "$tmp/base"
+    printf '%s:%s\n' "$subcommand" "$overlay"
+    if [ "$subcommand" = diff ]; then
+      printf '%s\n' "$expected_skill_diff"
+    fi
+  } > "$expected_calls"
   if ! cmp -s "$expected_calls" "$call_log"; then
     fail "$subcommand $role should preflight first and run base-first"
   fi
@@ -202,6 +215,13 @@ case "$subcommand" in
       : > "$destination/.script-applied-${source##*/}"
       exit 0
     fi
+    if [ "$#" -eq 0 ]; then
+      printf 'bare apply is forbidden\n' >&2
+      exit 70
+    fi
+    if [ "${FAKE_CHEZMOI_APPLY_STATUS:-0}" -ne 0 ]; then
+      exit "$FAKE_CHEZMOI_APPLY_STATUS"
+    fi
     printf 'apply-args:%s:%s\n' "$source" "$original_args" >> "$CHEZMOI_CALL_LOG"
     for target in "$@"; do
       parent=${target%/*}
@@ -243,6 +263,59 @@ cat > "$fake_bin/osascript" <<'EOF'
 printf 'osascript-notify\n' >> "$CHEZMOI_CALL_LOG"
 EOF
 chmod +x "$fake_bin/osascript"
+cat > "$fake_bin/skillsync" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+command=${1:-}
+shift
+profile=
+base=
+overlay=
+work=
+home=
+state=
+require=0
+non_interactive=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --profile) profile=$2; shift 2 ;;
+    --base-root) base=$2; shift 2 ;;
+    --overlay-root) overlay=$2; shift 2 ;;
+    --work-root) work=$2; shift 2 ;;
+    --home) home=$2; shift 2 ;;
+    --state-root) state=$2; shift 2 ;;
+    --require-sources) require=1; shift ;;
+    --non-interactive) non_interactive=1; shift ;;
+    *) printf 'unexpected skillsync argument: %s\n' "$1" >&2; exit 70 ;;
+  esac
+done
+if [ -z "$command" ] || [ -z "$profile" ] || [ -z "$base" ] || [ -z "$overlay" ] || [ -z "$home" ] || [ -z "$state" ]; then
+  printf 'invalid skillsync invocation\n' >&2
+  exit 70
+fi
+if [ "$command" = check ] && [ "$profile" = work ] && [ "${FAKE_SKILLSYNC_WORK_SOURCE_MISSING:-0}" = 1 ]; then
+  exit 66
+fi
+printf 'skillsync:%s:profile=%s:base=%s:overlay=%s:work=%s:home=%s:state=%s:require=%s:non-interactive=%s\n' \
+  "$command" "$profile" "$base" "$overlay" "$work" "$home" "$state" "$require" "$non_interactive" >> "$CHEZMOI_CALL_LOG"
+case "$command" in
+  check)
+    exit "${FAKE_SKILLSYNC_CHECK_STATUS:-0}"
+    ;;
+  diff)
+    exit "${FAKE_SKILLSYNC_DIFF_STATUS:-0}"
+    ;;
+  sync)
+    exit "${FAKE_SKILLSYNC_SYNC_STATUS:-0}"
+    ;;
+  *)
+    printf 'unexpected skillsync command: %s\n' "$command" >&2
+    exit 70
+    ;;
+esac
+EOF
+chmod +x "$fake_bin/skillsync"
 
 if ! run_compose preflight personal; then
   fail 'preflight personal should succeed for distinct base and personal targets'
@@ -431,6 +504,7 @@ if [ ! -f "$tmp/destination/.script-applied-personal" ]; then
   fail 'script-only apply should create the fake execution marker'
 fi
 if [ -e "$tmp/destination/$unrelated_target" ]; then
+
   fail 'script-only apply should not materialize unrelated file drift'
 fi
 rm "$tmp/personal/fake-status.txt"
@@ -478,6 +552,141 @@ if ! run_compose sync personal --no-pull > "$tmp/clean.out" 2>&1; then
 fi
 if ! grep -Fq 'decisions pending: 0' "$tmp/clean.out"; then
   fail 'summary should report zero pending decisions'
+fi
+
+# --- Skillsync composition ordering and failure propagation ---
+: > "$call_log"
+if ! run_compose preflight work; then
+  fail 'work preflight should validate the catalog without requiring skill sources'
+fi
+if ! grep -Fqx "skillsync:check:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
+  fail 'work preflight should check the work catalog without --require-sources'
+fi
+
+: > "$call_log"
+if ! run_compose preflight work --require-sources; then
+  fail 'work preflight should support explicit skill-source validation'
+fi
+if ! grep -Fqx "skillsync:check:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0" "$call_log"; then
+  fail 'explicit work preflight should require skill sources'
+fi
+
+: > "$call_log"
+if FAKE_SKILLSYNC_CHECK_STATUS=23 run_compose diff personal > /dev/null 2>&1; then
+  fail 'a failed skillsync check should fail diff'
+else
+  skillsync_check_status=$?
+fi
+if [ "$skillsync_check_status" -ne 23 ]; then
+  fail "skillsync check failure should propagate exit 23, got $skillsync_check_status"
+fi
+if grep -Eq '^(diff:|skillsync:diff:)' "$call_log"; then
+  fail 'diff must not continue after a failed skillsync preflight check'
+fi
+
+printf 'base collision\n' > "$tmp/base/dot_collision"
+printf 'personal collision\n' > "$tmp/personal/dot_collision"
+: > "$call_log"
+if run_compose preflight personal > /dev/null 2>&1; then
+  fail 'preflight collision should still fail before skillsync runs'
+fi
+if grep -q '^skillsync:' "$call_log"; then
+  fail 'skillsync check must run only after successful ownership validation'
+fi
+rm "$tmp/base/dot_collision" "$tmp/personal/dot_collision"
+
+: > "$call_log"
+if FAKE_SKILLSYNC_DIFF_STATUS=24 run_compose diff personal > /dev/null 2>&1; then
+  fail 'a failed skillsync diff should fail compose diff'
+else
+  skillsync_diff_status=$?
+fi
+if [ "$skillsync_diff_status" -ne 24 ]; then
+  fail "skillsync diff failure should propagate exit 24, got $skillsync_diff_status"
+fi
+if ! grep -Fqx "skillsync:diff:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
+  fail 'personal diff should append a source-isolated skillsync diff'
+fi
+if grep -q '^apply-' "$call_log"; then
+  fail 'compose diff must never apply managed targets'
+fi
+
+line_of() {
+  grep -n -m 1 -Fx "$1" "$call_log" | cut -d: -f1
+}
+
+: > "$call_log"
+if ! run_compose sync personal; then
+  fail 'clean sync should complete Skills only after clean chezmoi composition'
+fi
+pull_line=$(line_of "git-pull:$tmp/base")
+managed_line=$(line_of "managed:$tmp/base")
+check_line=$(line_of "skillsync:check:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0")
+status_line=$(line_of "status:$tmp/base")
+sync_line=$(line_of "skillsync:sync:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=1")
+if [ "$pull_line" -ge "$managed_line" ] || [ "$managed_line" -ge "$check_line" ] || [ "$check_line" -ge "$status_line" ] || [ "$status_line" -ge "$sync_line" ]; then
+  fail 'sync must pull, preflight/check, apply/check chezmoi, then skillsync in order'
+fi
+if grep -q '^apply-' "$call_log"; then
+  fail 'clean sync must not issue a bare chezmoi apply'
+fi
+
+printf ' M blocked/by-check\n' > "$tmp/personal/fake-status.txt"
+: > "$call_log"
+if FAKE_SKILLSYNC_CHECK_STATUS=23 run_compose sync personal --no-pull > /dev/null 2>&1; then
+  fail 'sync must stop when its source-required skillsync check fails'
+else
+  skillsync_sync_check_status=$?
+fi
+if [ "$skillsync_sync_check_status" -ne 23 ]; then
+  fail "sync skillsync check failure should propagate exit 23, got $skillsync_sync_check_status"
+fi
+if grep -Eq '^(status:|apply-|skillsync:sync:)' "$call_log"; then
+  fail 'no chezmoi apply or skillsync sync may follow a failed sync preflight'
+fi
+rm "$tmp/personal/fake-status.txt"
+
+printf ' M blocked/missing-work-source\n' > "$tmp/work/fake-status.txt"
+: > "$call_log"
+if FAKE_SKILLSYNC_WORK_SOURCE_MISSING=1 run_compose sync work --no-pull > /dev/null 2>&1; then
+  fail 'missing external work skill source should fail work sync'
+else
+  missing_work_status=$?
+fi
+if [ "$missing_work_status" -ne 66 ]; then
+  fail "missing work skill source should exit 66, got $missing_work_status"
+fi
+if grep -Eq '^(status:|apply-|skillsync:sync:)' "$call_log"; then
+  fail 'missing work skill source must abort before chezmoi applies anything'
+fi
+rm "$tmp/work/fake-status.txt"
+
+printf ' M blocked/apply-failure\n' > "$tmp/personal/fake-status.txt"
+: > "$call_log"
+if FAKE_CHEZMOI_APPLY_STATUS=45 run_compose sync personal --no-pull > /dev/null 2>&1; then
+  fail 'a failed chezmoi apply should fail sync'
+else
+  chezmoi_apply_status=$?
+fi
+if [ "$chezmoi_apply_status" -ne 45 ]; then
+  fail "chezmoi apply failure should propagate exit 45, got $chezmoi_apply_status"
+fi
+if grep -q '^skillsync:sync:' "$call_log"; then
+  fail 'skillsync sync must not follow a failed chezmoi apply'
+fi
+rm "$tmp/personal/fake-status.txt"
+
+: > "$call_log"
+if FAKE_SKILLSYNC_SYNC_STATUS=17 run_compose sync personal --no-pull > /dev/null 2>&1; then
+  fail 'skillsync conflict should fail sync and remain non-interactive'
+else
+  skillsync_sync_status=$?
+fi
+if [ "$skillsync_sync_status" -ne 17 ]; then
+  fail "skillsync sync failure should propagate exit 17, got $skillsync_sync_status"
+fi
+if ! grep -q '^osascript-notify$' "$call_log"; then
+  fail 'skillsync conflicts should notify after reporting their failure'
 fi
 
 "$repo_root/tests/test-local-mode.sh"

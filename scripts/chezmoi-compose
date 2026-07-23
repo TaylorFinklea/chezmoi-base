@@ -35,7 +35,8 @@ state_for_source() {
 }
 
 usage() {
-  printf 'usage: %s <preflight|diff|verify> <personal|work>\n' "$0" >&2
+  printf 'usage: %s preflight <personal|work> [--require-sources]\n' "$0" >&2
+  printf '       %s <diff|verify> <personal|work>\n' "$0" >&2
   printf '       %s sync [personal|work] [--non-interactive] [--no-pull]\n' "$0" >&2
   printf '       %s apply <personal|work> <absolute-target>...\n' "$0" >&2
 }
@@ -58,6 +59,26 @@ run_chezmoi() {
 
   chezmoi --source "$source" --config "$config" \
     --persistent-state "$state" --destination "$DESTINATION" "$@"
+}
+
+run_skillsync() {
+  local command=$1
+  local args
+
+  shift
+  args=(
+    "$command"
+    --profile "$role"
+    --base-root "$BASE_SOURCE"
+    --overlay-root "${sources[1]}"
+    --home "$DESTINATION"
+    --state-root "$STATE_ROOT/skillsync"
+  )
+  if [ "$role" = work ]; then
+    args+=(--work-root "$WORK_SOURCE")
+  fi
+  args+=("$@")
+  skillsync "${args[@]}"
 }
 
 require_selected_sources() {
@@ -108,6 +129,7 @@ preflight() {
     cat "$managed_lists_dir/collisions" >&2
     return 1
   fi
+  run_skillsync check "$@"
 }
 
 sync_pulled=()
@@ -221,6 +243,13 @@ notify_decisions() {
   osascript -e "display notification \"$count file(s) need decisions - run chezmoi-sync\" with title \"chezmoi sync\"" > /dev/null 2>&1 || true
 }
 
+notify_skillsync_conflicts() {
+  if ! command -v osascript > /dev/null 2>&1; then
+    return 0
+  fi
+  osascript -e 'display notification "Skills need attention - run skillsync diff" with title "chezmoi sync"' > /dev/null 2>&1 || true
+}
+
 resolve_decisions() {
   local entry source target abs source_path choice remaining
 
@@ -294,14 +323,14 @@ print_summary() {
 }
 
 sync_run() {
-  local source
+  local source skillsync_status
 
   if [ "$no_pull" -eq 0 ]; then
     for source in "${sources[@]}"; do
       pull_repo "$source"
     done
   fi
-  preflight
+  preflight --require-sources
   for source in "${sources[@]}"; do
     classify_source "$source"
   done
@@ -314,6 +343,12 @@ sync_run() {
       notify_decisions "${#sync_decisions[@]}"
     fi
     return 2
+  fi
+  skillsync_status=0
+  run_skillsync sync --non-interactive || skillsync_status=$?
+  if [ "$skillsync_status" -ne 0 ]; then
+    notify_skillsync_conflicts
+    return "$skillsync_status"
   fi
 }
 
@@ -350,10 +385,25 @@ shift
 role=
 non_interactive=0
 no_pull=0
+require_skill_sources=0
 apply_targets=()
 
 case "$command" in
-  preflight|diff|verify)
+  preflight)
+    if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+      usage
+      exit 64
+    fi
+    role=$1
+    if [ "$#" -eq 2 ]; then
+      if [ "$2" != --require-sources ]; then
+        usage
+        exit 64
+      fi
+      require_skill_sources=1
+    fi
+    ;;
+  diff|verify)
     if [ "$#" -ne 1 ]; then
       usage
       exit 64
@@ -409,13 +459,20 @@ require_selected_sources
 
 case "$command" in
   preflight)
-    preflight
+    if [ "$require_skill_sources" -eq 1 ]; then
+      preflight --require-sources
+    else
+      preflight
+    fi
     ;;
   diff|verify)
     preflight
     for source in "${sources[@]}"; do
       run_chezmoi "$source" "$command"
     done
+    if [ "$command" = diff ]; then
+      run_skillsync diff
+    fi
     ;;
   apply)
     preflight
