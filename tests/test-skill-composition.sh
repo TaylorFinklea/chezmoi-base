@@ -330,7 +330,7 @@ if ! run_skillsync personal "$base_render_home" "$base_render_config" "$base_ren
 fi
 assert_empty_file "$tmp/personal-render.err" 'initial personal render stderr'
 assert_projection_contract personal "$base_render_home" "$base_render_state" "$personal_overlay" \
-  "$work_overlay" 40 50 34 11
+  "$work_overlay" 40 49 34 11
 
 # Build a read-only, representative snapshot of every current manual root.
 legacy_home="$tmp/legacy/home"
@@ -392,7 +392,7 @@ copy_skill "$fixtures/plugins" "$legacy_home/.claude/plugins/fake-plugin/skills"
 
 [ "$(count_skill_dirs "$legacy_native")" = 42 ] || fail 'legacy Claude fixture count should be 42'
 [ "$(count_skill_dirs "$legacy_agents")" = 24 ] || fail 'legacy .agents fixture count should be 24'
-[ "$(count_skill_dirs "$legacy_codex")" = 39 ] || fail 'legacy Codex fixture count should be 39'
+[ "$(count_skill_dirs "$legacy_codex")" = 38 ] || fail 'legacy Codex fixture count should be 38'
 [ "$(count_skill_dirs "$legacy_copilot")" = 19 ] || fail 'legacy Copilot fixture count should be 19'
 [ "$(count_skill_dirs "$legacy_pi")" = 10 ] || fail 'legacy Pi fixture count should be 10'
 [ "$(count_skill_dirs "$legacy_opencode")" = 11 ] || fail 'legacy OpenCode fixture count should be 11'
@@ -402,13 +402,13 @@ legacy_names="$tmp/legacy-names"
 collect_names "$legacy_native" "$legacy_agents" "$legacy_codex" "$legacy_copilot" "$legacy_pi" \
   "$legacy_opencode" "$legacy_hermes" > "$legacy_names"
 legacy_distinct=$(wc -l < "$legacy_names" | tr -d ' ')
-legacy_physical=$((42 + 24 + 39 + 19 + 10 + 11 + 11))
+legacy_physical=$((42 + 24 + 38 + 19 + 10 + 11 + 11))
 legacy_collisions=$(legacy_collision_count "$legacy_native" "$legacy_agents" "$legacy_codex" \
   "$legacy_copilot" "$legacy_pi" "$legacy_opencode" "$legacy_hermes")
-[ "$legacy_physical" = 156 ] || fail 'legacy physical projection count should be 156'
+[ "$legacy_physical" = 155 ] || fail 'legacy physical projection count should be 155'
 legacy_metadata=$(metadata_characters_from_roots "$legacy_native" "$legacy_agents" "$legacy_codex" \
   "$legacy_copilot" "$legacy_pi" "$legacy_opencode" "$legacy_hermes")
-[ "$legacy_distinct" = 59 ] || fail "legacy distinct-name count should be 59, got $legacy_distinct"
+[ "$legacy_distinct" = 58 ] || fail "legacy distinct-name count should be 58, got $legacy_distinct"
 [ "$legacy_collisions" -gt 0 ] || fail 'legacy snapshot should expose duplicated manual names'
 
 # Seed migration targets only from legacy roots, retaining fake plugin/system trees untouched.
@@ -529,8 +529,8 @@ assert_empty_file "$tmp/personal-clean.out" 'second personal sync output'
 assert_empty_file "$tmp/personal-clean.err" 'second personal sync stderr'
 
 assert_projection_contract personal "$personal_home" "$personal_state" "$personal_overlay" \
-  "$work_overlay" 40 50 34 11
-assert_audit_contract personal "$personal_home" "$personal_config" "$personal_state" "$personal_overlay" 55 1
+  "$work_overlay" 40 49 34 11
+assert_audit_contract personal "$personal_home" "$personal_config" "$personal_state" "$personal_overlay" 54 1
 [ ! -e "$personal_home/.agents/skills" ] || fail 'personal topology must not retain .agents manual copies'
 [ ! -e "$personal_home/.copilot/skills" ] || fail 'personal topology must not retain Copilot manual copies'
 [ ! -e "$personal_home/.config/opencode/skills" ] || fail 'personal topology must not retain OpenCode manual copies'
@@ -542,11 +542,11 @@ after_names="$tmp/personal-after-names"
 collect_names "$personal_native" "$personal_codex" "$personal_pi" "$personal_hermes" |
   grep -Fxv fixture-unmanaged > "$after_names"
 after_distinct=$(wc -l < "$after_names" | tr -d ' ')
-[ "$after_distinct" -eq 55 ] || fail "personal distinct-name count should be 55, got $after_distinct"
+[ "$after_distinct" -eq 54 ] || fail "personal distinct-name count should be 54, got $after_distinct"
 [ $((legacy_distinct - after_distinct)) -eq 4 ] ||
   fail "unique-name decrease should be exactly four, got $((legacy_distinct - after_distinct))"
-after_physical=$((40 + 50 + 34 + 11))
-[ "$after_physical" -eq 135 ] || fail 'personal physical projection count should be 135'
+after_physical=$((40 + 49 + 34 + 11))
+[ "$after_physical" -eq 134 ] || fail 'personal physical projection count should be 134'
 after_metadata=$(metadata_characters_from_roots "$personal_native" "$personal_codex" "$personal_pi" "$personal_hermes")
 removed_metadata=$(metadata_characters_from_roots "$fixtures/retired" "$fixtures/system")
 before_metadata=$legacy_metadata
