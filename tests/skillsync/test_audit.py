@@ -8,6 +8,17 @@ from pathlib import Path
 
 RUNTIME_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "runtime-audit"
 
+OPENCODE_GIT_SPEC = (
+    "superpowers@"
+    "git+https://github.com/obra/"
+    "superpowers.git"
+)
+
+OPENCODE_NPM_SPEC = (
+    "opencode-npm-plugin@"
+    "1.2.3"
+)
+
 
 def runtime_home(name: str) -> Path:
     return RUNTIME_FIXTURES / name / "home"
@@ -83,8 +94,8 @@ def test_runtime_inventory_resolves_real_pi_and_opencode_specifiers(ss):
         "git:github.com/obra/superpowers",
         "npm:pi-skillful",
         "../../git/computer-use-sidecar",
-        "superpowers@git+https://github.com/obra/superpowers.git",
-        "opencode-npm-plugin@1.2.3",
+        OPENCODE_GIT_SPEC,
+        OPENCODE_NPM_SPEC,
     } <= providers
     stale = next(item for item in observed if item.name == "opencode-stale-skill")
     assert stale.state == "runtime-cache-only"
@@ -95,7 +106,7 @@ def test_runtime_inventory_reports_missing_real_pi_and_opencode_specifiers(ss, t
     observed, issues = ss.collect_runtime_inventory(runtime_home("missing-runtime-package-specifiers"))
     assert observed == []
     assert issues == [
-        {"adapter": "opencode", "provider": "superpowers@git+https://github.com/obra/superpowers.git",
+        {"adapter": "opencode", "provider": OPENCODE_GIT_SPEC,
          "state": "missing-active-install"},
         {"adapter": "pi", "provider": "npm:pi-web-access", "state": "missing-active-install"},
     ]

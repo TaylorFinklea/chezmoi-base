@@ -695,21 +695,55 @@ assert_empty_file "$tmp/work-migrate-idempotent.err" 'second work migration stde
 assert_projection_contract work "$work_migration_home" "$work_migration_state" "$work_overlay" \
   "$personal_overlay" 36 32 32 0
 
-# Render OMP and Codex configuration into an isolated HOME.  The checks use
-# native CLI configuration metadata rather than asking a model to enumerate Skills.
+# Render role-owned OMP configuration into isolated paths. Generic Skill toggles
+# come from the base partial; personal settings must never enter the work render.
 omp_home="$tmp/omp-runtime-home"
+omp_personal_config="$tmp/omp-personal-config.yml"
 mkdir -p "$omp_home/.omp/agent" "$omp_home/.codex"
-chezmoi --source "$repo_root" --destination "$omp_home" execute-template \
-  --file "$repo_root/dot_omp/agent/config.yml.tmpl" > "$omp_home/.omp/agent/config.yml"
+CHEZMOI_BASE_SOURCE="$repo_root" chezmoi --source "$work_overlay" --destination "$omp_home" execute-template \
+  --file "$work_overlay/dot_omp/agent/config.yml.tmpl" > "$omp_home/.omp/agent/config.yml"
+CHEZMOI_BASE_SOURCE="$repo_root" chezmoi --source "$personal_overlay" --destination "$omp_home" execute-template \
+  --file "$personal_overlay/dot_omp/agent/config.yml.tmpl" > "$omp_personal_config"
 HOME="$omp_home" XDG_CONFIG_HOME="$omp_home/.config" XDG_STATE_HOME="$omp_home/.state" \
   omp --version > "$tmp/omp-version.out"
 HOME="$omp_home" XDG_CONFIG_HOME="$omp_home/.config" XDG_STATE_HOME="$omp_home/.state" \
   omp config list --json > "$tmp/omp-config.json"
-run_python "$tmp/omp-config.json" <<'PY'
+run_python "$tmp/omp-config.json" "$omp_home/.omp/agent/config.yml" "$omp_personal_config" <<'PY'
 import json
+import re
 import sys
 
-config = json.loads(open(sys.argv[1]).read())
+config_path, work_config_path, personal_config_path = sys.argv[1:]
+expected_skills = """\
+skills:
+  enableClaudeUser: true
+  enableAgentsUser: false
+  enableCodexUser: false
+  enablePiUser: false
+"""
+work_config = open(work_config_path).read()
+personal_config = open(personal_config_path).read()
+if work_config != expected_skills:
+    raise SystemExit(f"work OMP config must contain only exact generic toggles: {work_config!r}")
+if not personal_config.startswith(expected_skills):
+    raise SystemExit("personal OMP config must begin with exact generic toggles")
+for setting in (
+    "providers",
+    "symbolPreset",
+    "theme",
+    "setupVersion",
+    "modelRoles",
+    "defaultThinkingLevel",
+    "cycleOrder",
+    "retry",
+    "task",
+):
+    if not re.search(rf"^{setting}:", personal_config, re.MULTILINE):
+        raise SystemExit(f"personal OMP config lost {setting}")
+    if re.search(rf"^{setting}:", work_config, re.MULTILINE):
+        raise SystemExit(f"work OMP config leaked personal {setting}")
+
+config = json.loads(open(config_path).read())
 expected = {
     "skills.enableClaudeUser": True,
     "skills.enableAgentsUser": False,

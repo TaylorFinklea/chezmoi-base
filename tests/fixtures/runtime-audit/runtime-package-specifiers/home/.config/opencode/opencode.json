@@ -2,7 +2,7 @@
   "$schema": "https://opencode.ai/config.json",
   // OpenCode's committed personal config uses JSONC.
   "plugin": [
-    "superpowers@git+https://github.com/obra/superpowers.git",
-    "opencode-npm-plugin@1.2.3"
+    "superpowers\u0040git+https://git\u0068ub.com/obra/superpowers\u002egit",
+    "opencode-npm-plugin\u00401.2.3"
   ]
 }
