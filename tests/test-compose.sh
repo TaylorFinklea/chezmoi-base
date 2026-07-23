@@ -65,8 +65,8 @@ assert_read_only_execution() {
     work) skill_work=$tmp/work ;;
     *) skill_work= ;;
   esac
-  expected_skill_check="skillsync:check:profile=$role:base=$tmp/base:overlay=$overlay:work=$skill_work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0"
-  expected_skill_diff="skillsync:diff:profile=$role:base=$tmp/base:overlay=$overlay:work=$skill_work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0"
+  expected_skill_check="skillsync:check:origin=source:profile=$role:base=$tmp/base:overlay=$overlay:work=$skill_work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0"
+  expected_skill_diff="skillsync:diff:origin=source:profile=$role:base=$tmp/base:overlay=$overlay:work=$skill_work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0"
 
 
   : > "$call_log"
@@ -93,7 +93,7 @@ assert_read_only_execution() {
   fi
 }
 
-mkdir -p "$tmp/base" "$tmp/personal" "$tmp/work" "$tmp/config" "$fake_bin"
+mkdir -p "$tmp/base/private_dot_local/bin" "$tmp/base" "$tmp/personal" "$tmp/work" "$tmp/config" "$fake_bin"
 : > "$tmp/config/base.toml"
 : > "$tmp/config/personal.toml"
 : > "$tmp/config/work.toml"
@@ -277,6 +277,11 @@ home=
 state=
 require=0
 non_interactive=0
+origin=${SKILLSYNC_ORIGIN:-fallback}
+if [ "$origin" = fallback ] && [ "${FAKE_LIVE_SKILLSYNC_INCOMPATIBLE:-0}" = 1 ]; then
+  printf 'incompatible installed skillsync invoked\n' >&2
+  exit 2
+fi
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --profile) profile=$2; shift 2 ;;
@@ -297,8 +302,8 @@ fi
 if [ "$command" = check ] && [ "$profile" = work ] && [ "${FAKE_SKILLSYNC_WORK_SOURCE_MISSING:-0}" = 1 ]; then
   exit 66
 fi
-printf 'skillsync:%s:profile=%s:base=%s:overlay=%s:work=%s:home=%s:state=%s:require=%s:non-interactive=%s\n' \
-  "$command" "$profile" "$base" "$overlay" "$work" "$home" "$state" "$require" "$non_interactive" >> "$CHEZMOI_CALL_LOG"
+printf 'skillsync:%s:origin=%s:profile=%s:base=%s:overlay=%s:work=%s:home=%s:state=%s:require=%s:non-interactive=%s\n' \
+  "$command" "$origin" "$profile" "$base" "$overlay" "$work" "$home" "$state" "$require" "$non_interactive" >> "$CHEZMOI_CALL_LOG"
 case "$command" in
   check)
     exit "${FAKE_SKILLSYNC_CHECK_STATUS:-0}"
@@ -316,6 +321,12 @@ case "$command" in
 esac
 EOF
 chmod +x "$fake_bin/skillsync"
+cat > "$tmp/base/private_dot_local/bin/executable_skillsync" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+SKILLSYNC_ORIGIN=source exec skillsync "$@"
+EOF
+chmod +x "$tmp/base/private_dot_local/bin/executable_skillsync"
 
 if ! run_compose preflight personal; then
   fail 'preflight personal should succeed for distinct base and personal targets'
@@ -324,6 +335,25 @@ fi
 if ! run_compose preflight work; then
   fail 'preflight work should succeed for distinct base and work targets'
 fi
+# The selected base checkout must win over an incompatible installed command.
+: > "$call_log"
+if ! FAKE_LIVE_SKILLSYNC_INCOMPATIBLE=1 run_compose preflight personal; then
+  fail 'preflight should use the executable in the selected base source'
+fi
+if ! grep -Fqx "skillsync:check:origin=source:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
+  fail 'preflight should invoke source skillsync before the installed fallback'
+fi
+
+# When the selected source has no executable, retain installed-command behavior.
+chmod -x "$tmp/base/private_dot_local/bin/executable_skillsync"
+: > "$call_log"
+if ! run_compose preflight personal; then
+  fail 'preflight should fall back to the installed skillsync command'
+fi
+if ! grep -Fqx "skillsync:check:origin=fallback:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
+  fail 'preflight should use the installed skillsync command only without a source executable'
+fi
+chmod +x "$tmp/base/private_dot_local/bin/executable_skillsync"
 
 printf 'base collision\n' > "$tmp/base/dot_collision"
 printf 'personal collision\n' > "$tmp/personal/dot_collision"
@@ -559,7 +589,7 @@ fi
 if ! run_compose preflight work; then
   fail 'work preflight should validate the catalog without requiring skill sources'
 fi
-if ! grep -Fqx "skillsync:check:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
+if ! grep -Fqx "skillsync:check:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
   fail 'work preflight should check the work catalog without --require-sources'
 fi
 
@@ -567,7 +597,7 @@ fi
 if ! run_compose preflight work --require-sources; then
   fail 'work preflight should support explicit skill-source validation'
 fi
-if ! grep -Fqx "skillsync:check:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0" "$call_log"; then
+if ! grep -Fqx "skillsync:check:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0" "$call_log"; then
   fail 'explicit work preflight should require skill sources'
 fi
 
@@ -604,7 +634,7 @@ fi
 if [ "$skillsync_diff_status" -ne 24 ]; then
   fail "skillsync diff failure should propagate exit 24, got $skillsync_diff_status"
 fi
-if ! grep -Fqx "skillsync:diff:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
+if ! grep -Fqx "skillsync:diff:origin=source:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
   fail 'personal diff should append a source-isolated skillsync diff'
 fi
 if grep -q '^apply-' "$call_log"; then
@@ -621,9 +651,9 @@ if ! run_compose sync personal; then
 fi
 pull_line=$(line_of "git-pull:$tmp/base")
 managed_line=$(line_of "managed:$tmp/base")
-check_line=$(line_of "skillsync:check:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0")
+check_line=$(line_of "skillsync:check:origin=source:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0")
 status_line=$(line_of "status:$tmp/base")
-sync_line=$(line_of "skillsync:sync:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=1")
+sync_line=$(line_of "skillsync:sync:origin=source:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=1")
 if [ "$pull_line" -ge "$managed_line" ] || [ "$managed_line" -ge "$check_line" ] || [ "$check_line" -ge "$status_line" ] || [ "$status_line" -ge "$sync_line" ]; then
   fail 'sync must pull, preflight/check, apply/check chezmoi, then skillsync in order'
 fi

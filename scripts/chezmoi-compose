@@ -63,7 +63,7 @@ run_chezmoi() {
 
 run_skillsync() {
   local command=$1
-  local args
+  local args source_skillsync
 
   shift
   args=(
@@ -78,7 +78,12 @@ run_skillsync() {
     args+=(--work-root "$WORK_SOURCE")
   fi
   args+=("$@")
-  skillsync "${args[@]}"
+  source_skillsync="$BASE_SOURCE/private_dot_local/bin/executable_skillsync"
+  if [ -x "$source_skillsync" ]; then
+    "$source_skillsync" "${args[@]}"
+  else
+    command skillsync "${args[@]}"
+  fi
 }
 
 require_selected_sources() {
