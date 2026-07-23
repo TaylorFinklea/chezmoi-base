@@ -1057,6 +1057,50 @@ def _claude_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
     return observed, issues
 
 
+
+def _codex_marketplace_install_paths(home: Path, root: Path, config: dict, provider: str) -> list[Path]:
+    """Resolve a current Codex marketplace install from its configured source.
+
+    Codex records enabled plugin IDs as ``<plugin>@<marketplace>``.  The
+    current runtime materializes a configured local marketplace below its
+    ``plugins/<plugin>`` directory (for example
+    ``.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome``).
+    A downloaded cache alone is not an install: caches remain diagnostic-only
+    so stale enabled entries are still reported by strict audit.
+    """
+    if "@" not in provider:
+        return []
+    plugin_name, marketplace_name = provider.rsplit("@", 1)
+    marketplaces = config.get("marketplaces")
+    if not plugin_name or not marketplace_name or not isinstance(marketplaces, dict):
+        return []
+    marketplace = marketplaces.get(marketplace_name)
+    if not isinstance(marketplace, dict):
+        return []
+    source = marketplace.get("source")
+    marketplace_root = _runtime_path(home, root, source)
+    if marketplace_root is None:
+        return []
+    return [marketplace_root / "plugins" / plugin_name]
+
+
+def _collision_provider_details(observed: list[ObservedSkill]) -> list[dict]:
+    return [
+        {
+            "adapter": item.adapter,
+            "enabled": item.enabled,
+            "origin": item.origin,
+            "provider": item.provider,
+            "state": item.state,
+        }
+        for item in sorted(observed, key=lambda item: (item.adapter, item.provider, item.origin, item.state))
+    ]
+
+
+def _collision_provider_label(item: ObservedSkill) -> str:
+    return f"{item.adapter or 'unknown'}:{item.provider or 'unknown'}"
+
+
 def _codex_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
     root = home / ".codex"
     config_path = root / "config.toml"
@@ -1069,13 +1113,19 @@ def _codex_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
     active_paths: set[Path] = set()
     for provider, is_enabled in sorted(enabled.items()):
         paths = _plugin_paths(registry.get(provider), home, plugins_root)
+        paths.extend(_codex_marketplace_install_paths(home, root, config, provider))
         if not paths:
-            paths = [plugins_root / provider]
+            paths = [plugins_root / provider]  # legacy registry-less layout
         found = False
+        seen_paths: set[Path] = set()
         for path in paths:
+            resolved_path = path.resolve()
+            if resolved_path in seen_paths:
+                continue
+            seen_paths.add(resolved_path)
             if path.is_dir():
                 found = True
-                active_paths.add(path.resolve())
+                active_paths.add(resolved_path)
                 observed.extend(_skill_observations(path, provider=provider, adapter="codex",
                                                     enabled=is_enabled,
                                                     state="active" if is_enabled else "disabled"))
@@ -1174,11 +1224,15 @@ def classify_inventory(manual: dict[str, str], observed: list[ObservedSkill]) ->
             key=lambda item: (item.provider, item.adapter),
         )
         if is_manual and enabled_observed:
+            providers = _collision_provider_details(enabled_observed)
+            provider_labels = ", ".join(_collision_provider_label(item) for item in enabled_observed)
             report["collisions"].append({
                 "name": name, "kind": "manual-vs-plugin", "severity": "failure",
-                "detail": f"manual({manual[name]}) collides with enabled {enabled_observed[0].origin} provider(s)",
+                "detail": f"manual({manual[name]}) collides with enabled provider(s): {provider_labels}",
+                "providers": providers,
             })
         elif not is_manual and len(enabled_observed) >= 2:
+            providers = _collision_provider_details(enabled_observed)
             hashes = {o.tree_hash_value for o in enabled_observed}
             winner = enabled_observed[0].provider
             if len(hashes) == 1:
@@ -1186,17 +1240,20 @@ def classify_inventory(manual: dict[str, str], observed: list[ObservedSkill]) ->
                     "name": name, "kind": "plugin-plugin-identical", "severity": "info",
                     "winner": winner,
                     "detail": f"identical content across {len(enabled_observed)} providers; precedence: {winner}",
+                    "providers": providers,
                 })
             else:
                 report["collisions"].append({
-                    "name": name, "kind": "plugin-plugin-divergent", "severity": "failure",
+                    "name": name, "kind": "plugin-plugin-divergent", "severity": "warning",
                     "detail": f"{len(enabled_observed)} providers with divergent content for {name!r}",
+                    "providers": providers,
                 })
     return report
 
 
 def audit_exit_code(report: dict) -> int:
-    if any(c["severity"] == "failure" for c in report["collisions"]):
+    if any(c["kind"] == "manual-vs-plugin" and c["severity"] == "failure"
+           for c in report["collisions"]):
         return 2
     if report.get("strict_runtime") and report.get("runtime_issues"):
         return 2

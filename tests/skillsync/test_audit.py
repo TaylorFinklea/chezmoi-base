@@ -51,6 +51,26 @@ def test_runtime_inventory_reports_missing_enabled_install(ss):
         "state": "missing-active-install",
     }]
 
+def test_runtime_inventory_resolves_current_codex_marketplace_installs_without_masking_stale_entries(ss):
+    observed, issues = ss.collect_runtime_inventory(runtime_home("current-codex-marketplaces"))
+    active_providers = {item.provider for item in observed if item.enabled}
+    assert {
+        "sites@openai-bundled",
+        "browser@openai-bundled",
+        "chrome@openai-bundled",
+        "computer-use@openai-bundled",
+        "visualize@openai-bundled",
+    } <= active_providers
+    assert issues == [
+        {"adapter": "codex", "provider": "build-ios-apps@openai-curated",
+         "state": "missing-active-install"},
+        {"adapter": "codex", "provider": "documents@openai-primary-runtime",
+         "state": "missing-active-install"},
+    ]
+    primary_cache = next(item for item in observed if item.name == "documents-cache-skill")
+    assert primary_cache.enabled is False
+    assert primary_cache.state == "runtime-cache-only"
+
 
 def test_runtime_inventory_uses_deterministic_precedence_for_identical_plugins(ss):
     observed, issues = ss.collect_runtime_inventory(runtime_home("identical-plugins"))
@@ -61,11 +81,14 @@ def test_runtime_inventory_uses_deterministic_precedence_for_identical_plugins(s
     assert issues == []
 
 
-def test_runtime_inventory_fails_for_divergent_plugins(ss):
+def test_runtime_inventory_surfaces_divergent_plugins_without_blocking_audit(ss):
     observed, issues = ss.collect_runtime_inventory(runtime_home("divergent-plugins"))
     report = ss.classify_inventory({}, observed)
     assert report["collisions"][0]["kind"] == "plugin-plugin-divergent"
-    assert ss.audit_exit_code(report) == 2
+    assert report["collisions"][0]["severity"] == "warning"
+    report["strict_runtime"] = True
+    report["runtime_issues"] = []
+    assert ss.audit_exit_code(report) == 0
     assert issues == []
 
 
@@ -136,6 +159,13 @@ def test_classify_inventory_manual_vs_enabled_plugin_is_hard_failure(ss):
     assert len(collisions) == 1
     assert collisions[0]["kind"] == "manual-vs-plugin"
     assert collisions[0]["severity"] == "failure"
+    assert collisions[0]["providers"] == [{
+        "adapter": "",
+        "enabled": True,
+        "origin": "plugin",
+        "provider": "acme",
+        "state": "active",
+    }]
     assert ss.audit_exit_code(report) == 2
 
 
@@ -159,7 +189,7 @@ def test_classify_inventory_plugin_plugin_identical_is_info_not_failure(ss):
     assert ss.audit_exit_code(report) == 0  # informational only, never a failure
 
 
-def test_classify_inventory_plugin_plugin_divergent_is_hard_failure(ss):
+def test_classify_inventory_plugin_plugin_divergence_is_visible_but_non_blocking(ss):
     observed = [
         ss.ObservedSkill(name="cloudflare", origin="plugin", tree_hash_value="sha256:aaa", provider="p1"),
         ss.ObservedSkill(name="cloudflare", origin="system", tree_hash_value="sha256:bbb", provider="p2"),
@@ -167,8 +197,8 @@ def test_classify_inventory_plugin_plugin_divergent_is_hard_failure(ss):
     report = ss.classify_inventory({}, observed)
     assert len(report["collisions"]) == 1
     assert report["collisions"][0]["kind"] == "plugin-plugin-divergent"
-    assert report["collisions"][0]["severity"] == "failure"
-    assert ss.audit_exit_code(report) == 2
+    assert report["collisions"][0]["severity"] == "warning"
+    assert ss.audit_exit_code(report) == 0
 
 
 def test_classify_inventory_buckets_system_and_unmanaged(ss):
