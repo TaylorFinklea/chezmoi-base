@@ -313,7 +313,10 @@ def scan(root):
             except OSError:
                 violations.add((str(relative_path), "unreadable-path"))
                 continue
-            if name in {".git", ".DS_Store"}:
+            if name in {".git", ".DS_Store", "__pycache__"} or relative_path.parts[0] in {
+                ".worktrees",
+                "ai-scratch",
+            }:
                 continue
             retained_directories.append(name)
         directory_names[:] = retained_directories

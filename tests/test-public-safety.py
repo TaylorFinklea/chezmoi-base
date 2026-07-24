@@ -209,6 +209,18 @@ class PublicSafetyScannerTests(unittest.TestCase):
             0,
         )
 
+    def test_ignores_repo_local_generated_directories(self):
+        self.assertEqual(
+            run_scan(
+                {
+                    "ai-scratch/private.txt": "/" + "Users/someone/private",
+                    ".worktrees/feature/private.txt": "/" + "Users/someone/private",
+                    "scripts/__pycache__/module.pyc": "/" + "Users/someone/private",
+                }
+            ),
+            0,
+        )
+
     def test_rejects_openai_style_credential(self):
         self.assertNotEqual(run_scan({"dot_example": "token = " + "sk-" + ("a" * 26)}), 0)
 
