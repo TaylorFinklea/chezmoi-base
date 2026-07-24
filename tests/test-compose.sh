@@ -172,6 +172,9 @@ case "$subcommand" in
     fi
     printf '%s/dot_%s\n' "$source" "${2##*/}"
     ;;
+  execute-template)
+    cat
+    ;;
   apply)
     original_args="$*"
     parent_dirs=0
@@ -204,6 +207,9 @@ case "$subcommand" in
     fi
     printf 'apply-args:%s:%s\n' "$source" "$original_args" >> "$CHEZMOI_CALL_LOG"
     for target in "$@"; do
+      if [ "${CHEZMOI_FAIL_TARGET:-}" = "$target" ]; then
+        exit 72
+      fi
       parent=${target%/*}
       if [ ! -d "$parent" ] && [ "$parent_dirs" -ne 1 ]; then
         printf 'missing parent without --parent-dirs: %s\n' "$parent" >&2
@@ -327,14 +333,39 @@ overlay_target="$tmp/destination/overlay-target/personal"
 if ! run_compose apply personal "$base_target" "$overlay_target"; then
   fail 'targeted apply should succeed for owned targets'
 fi
-if ! grep -Fqx "apply-args:$tmp/base:--parent-dirs -- $base_target" "$call_log"; then
-  fail 'base-owned target should apply its distinct missing parent through the base source'
+if ! grep -Fqx "apply-args:$tmp/base:--force --parent-dirs -- $base_target" "$call_log"; then
+  fail 'base-owned target should force-apply only its reviewed target through the base source'
 fi
-if ! grep -Fqx "apply-args:$tmp/personal:--parent-dirs -- $overlay_target" "$call_log"; then
-  fail 'overlay-owned target should apply its distinct missing parent through the overlay source'
+if ! grep -Fqx "apply-args:$tmp/personal:--force --parent-dirs -- $overlay_target" "$call_log"; then
+  fail 'overlay-owned target should force-apply only its reviewed target through the overlay source'
 fi
 if [ ! -f "$base_target" ] || [ ! -f "$overlay_target" ]; then
   fail 'targeted apply should materialize targets in distinct fresh parent trees'
+fi
+
+removed_target="$tmp/destination/retired-skill"
+mkdir -p "$removed_target"
+printf 'retained rollback bytes\n' > "$removed_target/content"
+printf 'retired-skill\n' > "$tmp/personal/.chezmoiremove"
+if ! run_compose apply personal "$removed_target"; then
+  fail 'targeted apply should accept an exact rendered removal target'
+fi
+if [ -e "$removed_target" ]; then
+  fail 'targeted removal should delete the exact reviewed target'
+fi
+
+printf 'base-before\n' > "$base_target"
+printf 'overlay-before\n' > "$overlay_target"
+mkdir -p "$removed_target"
+printf 'remove-before\n' > "$removed_target/content"
+if CHEZMOI_FAIL_TARGET="$overlay_target" run_compose apply personal \
+  "$base_target" "$overlay_target" "$removed_target" > /dev/null 2>&1; then
+  fail 'targeted apply should surface an overlay batch failure'
+fi
+if [ "$(cat "$base_target")" != base-before ] ||
+   [ "$(cat "$overlay_target")" != overlay-before ] ||
+   [ "$(cat "$removed_target/content")" != remove-before ]; then
+  fail 'targeted apply failure should restore every reviewed target'
 fi
 
 if run_compose apply personal "$tmp/destination/unmanaged" > /dev/null 2>&1; then

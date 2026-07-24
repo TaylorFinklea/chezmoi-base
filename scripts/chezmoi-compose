@@ -318,26 +318,92 @@ sync_run() {
 }
 
 apply_targets_cmd() {
-  local target base_batch overlay_batch
+  local target relative remove_file transaction_dir backup_file failed
+  local base_batch overlay_batch remove_batch existing_batch
 
   base_batch=()
   overlay_batch=()
+  remove_batch=()
+  existing_batch=()
+  transaction_dir=$(mktemp -d "$STATE_ROOT/chezmoi-apply.XXXXXX")
+  backup_file="$transaction_dir/targets.tar"
+  remove_file="$transaction_dir/removals"
+  : > "$remove_file"
+  if [ -f "${sources[1]}/.chezmoiremove" ]; then
+    run_chezmoi "${sources[1]}" execute-template < "${sources[1]}/.chezmoiremove" |
+      while IFS= read -r relative; do
+        case "$relative" in
+          ''|'#'*) continue ;;
+        esac
+        printf '%s/%s\n' "$DESTINATION" "$relative"
+      done > "$remove_file"
+  fi
+
   for target in "${apply_targets[@]}"; do
+    case "$target" in
+      "$DESTINATION"/*) relative=${target#"$DESTINATION"/} ;;
+      *)
+        printf 'target is outside destination: %s\n' "$target" >&2
+        rm -rf "$transaction_dir"
+        return 65
+        ;;
+    esac
+    case "$relative" in
+      ''|../*|*/../*|*/..)
+        printf 'unsafe apply target: %s\n' "$target" >&2
+        rm -rf "$transaction_dir"
+        return 65
+        ;;
+    esac
     if LC_ALL=C grep -Fqx -- "$target" "$managed_lists_dir/base"; then
       base_batch[${#base_batch[@]}]="$target"
     elif LC_ALL=C grep -Fqx -- "$target" "$managed_lists_dir/overlay"; then
       overlay_batch[${#overlay_batch[@]}]="$target"
+    elif LC_ALL=C grep -Fqx -- "$target" "$remove_file"; then
+      remove_batch[${#remove_batch[@]}]="$target"
     else
       printf 'target not managed by base or overlay: %s\n' "$target" >&2
+      rm -rf "$transaction_dir"
       return 65
     fi
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      existing_batch[${#existing_batch[@]}]="$relative"
+    fi
   done
+
+  if [ "${#existing_batch[@]}" -gt 0 ]; then
+    tar -cpf "$backup_file" -C "$DESTINATION" "${existing_batch[@]}"
+  else
+    tar -cpf "$backup_file" --files-from /dev/null
+  fi
+
+  failed=0
   if [ "${#base_batch[@]}" -gt 0 ]; then
-    run_chezmoi "${sources[0]}" apply --parent-dirs -- "${base_batch[@]}"
+    run_chezmoi "${sources[0]}" apply --force --parent-dirs -- "${base_batch[@]}" || failed=$?
   fi
-  if [ "${#overlay_batch[@]}" -gt 0 ]; then
-    run_chezmoi "${sources[1]}" apply --parent-dirs -- "${overlay_batch[@]}"
+  if [ "$failed" -eq 0 ] && [ "${#overlay_batch[@]}" -gt 0 ]; then
+    run_chezmoi "${sources[1]}" apply --force --parent-dirs -- "${overlay_batch[@]}" || failed=$?
   fi
+  if [ "$failed" -eq 0 ]; then
+    for target in "${remove_batch[@]}"; do
+      rm -rf -- "$target" || failed=$?
+      [ "$failed" -eq 0 ] || break
+    done
+  fi
+  if [ "$failed" -ne 0 ]; then
+    for target in "${apply_targets[@]}"; do
+      rm -rf -- "$target" || true
+    done
+    if ! tar -xpf "$backup_file" -C "$DESTINATION"; then
+      printf 'scoped apply failed and rollback restore failed\n' >&2
+      rm -rf "$transaction_dir"
+      return 74
+    fi
+    printf 'scoped apply failed; all reviewed targets restored\n' >&2
+    rm -rf "$transaction_dir"
+    return "$failed"
+  fi
+  rm -rf "$transaction_dir"
 }
 
 command=${1:-}
