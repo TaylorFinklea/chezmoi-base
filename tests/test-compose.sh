@@ -330,6 +330,8 @@ fi
 : > "$call_log"
 base_target="$tmp/destination/base-target/shared"
 overlay_target="$tmp/destination/overlay-target/personal"
+mkdir -p "${overlay_target%/*}"
+printf 'premodified overlay\n' > "$overlay_target"
 if ! run_compose apply personal "$base_target" "$overlay_target"; then
   fail 'targeted apply should succeed for owned targets'
 fi
@@ -340,7 +342,10 @@ if ! grep -Fqx "apply-args:$tmp/personal:--force --parent-dirs -- $overlay_targe
   fail 'overlay-owned target should force-apply only its reviewed target through the overlay source'
 fi
 if [ ! -f "$base_target" ] || [ ! -f "$overlay_target" ]; then
-  fail 'targeted apply should materialize targets in distinct fresh parent trees'
+  fail 'targeted apply should materialize every reviewed target'
+fi
+if [ -s "$overlay_target" ]; then
+  fail 'explicit overlay target should overwrite a premodified file headlessly'
 fi
 
 removed_target="$tmp/destination/retired-skill"
@@ -358,6 +363,10 @@ printf 'base-before\n' > "$base_target"
 printf 'overlay-before\n' > "$overlay_target"
 mkdir -p "$removed_target"
 printf 'remove-before\n' > "$removed_target/content"
+chmod 640 "$base_target"
+chmod 600 "$overlay_target"
+chmod 750 "$removed_target"
+chmod 640 "$removed_target/content"
 if CHEZMOI_FAIL_TARGET="$overlay_target" run_compose apply personal \
   "$base_target" "$overlay_target" "$removed_target" > /dev/null 2>&1; then
   fail 'targeted apply should surface an overlay batch failure'
@@ -366,6 +375,16 @@ if [ "$(cat "$base_target")" != base-before ] ||
    [ "$(cat "$overlay_target")" != overlay-before ] ||
    [ "$(cat "$removed_target/content")" != remove-before ]; then
   fail 'targeted apply failure should restore every reviewed target'
+fi
+if [ ! -f "$base_target" ] || [ ! -f "$overlay_target" ] ||
+   [ ! -d "$removed_target" ] || [ ! -f "$removed_target/content" ]; then
+  fail 'targeted apply failure should restore every reviewed target type and existence state'
+fi
+if [ "$(stat -f '%Lp' "$base_target")" != 640 ] ||
+   [ "$(stat -f '%Lp' "$overlay_target")" != 600 ] ||
+   [ "$(stat -f '%Lp' "$removed_target")" != 750 ] ||
+   [ "$(stat -f '%Lp' "$removed_target/content")" != 640 ]; then
+  fail 'targeted apply failure should restore every reviewed target mode'
 fi
 
 if run_compose apply personal "$tmp/destination/unmanaged" > /dev/null 2>&1; then
