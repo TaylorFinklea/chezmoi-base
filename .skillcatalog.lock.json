@@ -6,7 +6,7 @@
       "description": "Audits GitHub Actions workflows for security vulnerabilities in AI agent integrations including Claude Code Action, OpenAI Codex, and GitHub AI Inference. Detects attack vectors where attacker-controlled input reaches AI agents running in CI/CD pipelines, including env var intermediary patterns, direct expression injection, dangerous sandbox configurations, and wildcard user allowlists. Use when reviewing workflow files that invoke AI coding agents, auditing CI/CD pipeline security for prompt injection risks, or evaluating agentic action configurations.",
       "name": "agentic-actions-auditor",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -19,7 +19,7 @@
       "description": "Clarify requirements before implementing. Use when serious doubts arise.",
       "name": "ask-questions-if-underspecified",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -32,7 +32,7 @@
       "description": "Provision, migrate, and run Bitwarden Secrets Manager project secrets. Use when a user asks to set up, migrate, repair, or use BWS secrets for a repository under ~/git.",
       "name": "bws-project-secrets",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -45,7 +45,7 @@
       "description": "Use when reconciling chezmoi drift in the dotfiles source repo \u2014 running chezmoi diff/apply/re-add, deciding source-vs-home direction, migrating a config surface across agents, or writing a commit/handoff claim about a config file. Carries the direction-decision logic and the hard-won gotchas (sister-config check, mktemp probing, verify-before-claiming, hidden PUA glyphs).",
       "name": "chezmoi-reconcile",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -58,7 +58,7 @@
       "description": "Use when comparing harness/model candidates on the same beads task with Conductor Arena, such as \"use conductor arena\", \"pick a bead and run the arena\", or harness/model shootouts over a real bead. Not for normal Guildhall/Conductor fleet sessions.",
       "name": "conductor-arena",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -71,7 +71,7 @@
       "description": "Expert Core Data guidance (iOS/macOS): stack setup, fetch requests & NSFetchedResultsController, saving/merge conflicts, threading & Swift Concurrency, batch operations & persistent history, migrations, performance, and NSPersistentCloudKitContainer/CloudKit sync.",
       "name": "core-data-expert",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -84,7 +84,7 @@
       "description": "Use when orchestrating multi-step work as a Lead-tier session \u2014 dispatching to cheaper models, distributing load, or picking adversarial reviewers \u2014 or when the user says delegate/distribute/dispatch/review with another model. Loads the delegation posture, panel criteria, and model-family map. Not for Conductor/Guildhall/Arena/Ralph sessions.",
       "name": "delegate",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -97,7 +97,7 @@
       "description": "Use when offloading bounded work to a different model while you orchestrate, including GPT-5.6 Sol, Terra, and Luna or cheaper Pi workers. Not for Guildhall/Conductor fleet sessions.",
       "name": "dispatch-to-pi",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -110,7 +110,7 @@
       "description": "Use when running multi-agent or schema-validated orchestration on non-Opus models \u2014 especially when Anthropic/Opus is rate-limited \u2014 via the direct opencode-go provider (Kimi K2.7 Code, MiniMax M3) and the local `orchestra` driver. Covers the deterministic agentWithSchema/parallel/Budget primitives, per-harness invocation (Claude Code, Pi, OpenCode, Codex), and the hard-won gotchas (stdin/TTY hang, <think>-strip for MiniMax, opencode-go is a direct provider).",
       "name": "fallback-orchestration",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -123,7 +123,7 @@
       "description": "Expert in FastAPI Python development with best practices for APIs and async operations",
       "name": "fastapi-python",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -136,7 +136,7 @@
       "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
       "name": "find-skills",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -149,7 +149,7 @@
       "description": "Safely analyzes and cleans up local git branches and worktrees by categorizing them as merged, squash-merged, superseded, or active work.",
       "name": "git-cleanup",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -162,7 +162,7 @@
       "description": "Use when starting, resuming, or supervising Conductor loops or compatibility cycles, Bursar roster/availability routing, Hindsight scorecard evidence, provider fallback, or cross-harness queue dispatch.",
       "name": "guildhall-orchestration",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -175,7 +175,7 @@
       "description": "Generate a self-contained prompt to hand off backlog work to another AI agent (cheaper model, different harness, or web UI). Reads roadmap state, picks items, and produces a copy-pasteable prompt with all context inline.",
       "name": "handoff-prompt",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native"
       ],
@@ -186,7 +186,7 @@
       "description": "Use to publish a harness-deck/hdeck report \u2014 summarize major work (feature/refactor/audit/investigation) or a multi-session roadmap as a durable dashboard record, or pose an interactive ask/decision/approval question too rich for a native inline picker: a mock-up to react to, a paragraph per option, more explanation than option labels hold, or an answer that must survive a context clear. Reports can render arbitrary HTML/CSS/SVG via the `html` block, so reach for harness-deck when you want a custom layout, rendered mock-up, or inline visual that plain markdown can't express. NOT for short, self-explanatory select/multi-select choices \u2014 those belong in the harness's native inline picker, not a report.",
       "name": "harness-deck",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -199,7 +199,7 @@
       "description": "Detects fail-open insecure defaults (hardcoded secrets, weak auth, permissive security) that allow apps to run insecurely in production. Use when auditing security, reviewing config management, or analyzing environment variable handling.",
       "name": "insecure-defaults",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -212,7 +212,7 @@
       "description": "Use when running direct Ralph phase loops over one repo's `.docs/ai/current-state.md` Plan and deciding where that simple loop runs. Not for Guildhall/Conductor cycle dispatch, beads fleet orchestration, provider fallback, or Arena comparisons.",
       "name": "loops",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native"
       ],
@@ -223,7 +223,7 @@
       "description": "Configures Python projects with modern tooling (uv, ruff, ty). Use when creating projects, writing standalone scripts, or migrating from pip/Poetry/mypy/black.",
       "name": "modern-python",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -236,7 +236,7 @@
       "description": "Author a self-contained backlog item \u2014 scope, files, acceptance, verify, tier_floor + complexity \u2014 and append it to .docs/ai/roadmap.md. The entry must let any cheaper agent (Sonnet, Haiku, GPT, Kimi) execute the work without your back-context. Best run in Opus.",
       "name": "plan-backlog-item",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native"
       ],
@@ -247,7 +247,7 @@
       "description": "Master Rust async programming with Tokio, async traits, error handling, and concurrent patterns. Use when building async Rust applications, implementing concurrent systems, or debugging async code.",
       "name": "rust-async-patterns",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -260,7 +260,7 @@
       "description": "Guide for writing idiomatic Rust code based on Apollo GraphQL's best practices handbook. Use this skill when: (1) writing new Rust code or functions, (2) reviewing or refactoring existing Rust code, (3) deciding between borrowing vs cloning or ownership patterns, (4) implementing error handling with Result types, (5) optimizing Rust code for performance, (6) writing tests or documentation for Rust projects.\n",
       "name": "rust-best-practices",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -273,7 +273,7 @@
       "description": "Install and configure shadcn/ui components for React projects. Guides component selection, installation order, dependency management, customisation with semantic tokens, and common UI recipes (forms, data tables, navigation, modals). Use after tailwind-theme-builder has set up the theme infrastructure, when adding components, building forms, creating data tables, or setting up navigation.",
       "name": "shadcn-ui",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -286,7 +286,7 @@
       "description": "Save the last assistant message verbatim to ~/.claude/saved/<project>/ and the clipboard, then prompt the user to run /clear. User-invoked only.",
       "name": "slash",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native"
       ],
@@ -297,7 +297,7 @@
       "description": "Diagnose data races, convert callback-based code to async/await, implement actor isolation patterns, resolve Sendable conformance issues, and guide Swift 6 migration. Use when developers mention: (1) Swift Concurrency, async/await, actors, or tasks, (2) \"use Swift Concurrency\" or \"modern concurrency patterns\", (3) migrating to Swift 6, (4) data races or thread safety issues, (5) refactoring closures to async/await, (6) @MainActor, Sendable, or actor isolation, (7) concurrent code architecture or performance optimization, (8) concurrency-related linter warnings (SwiftLint or similar; e.g. async_without_await, Sendable/actor isolation/MainActor lint).",
       "name": "swift-concurrency",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -310,7 +310,7 @@
       "description": "Expert guidance for Swift Testing: test structure, #expect/#require macros, traits and tags, parameterized tests, test plans, parallel execution, async waiting patterns, and XCTest migration. Use when writing new Swift tests, modernizing XCTest suites, debugging flaky tests, or improving test quality and maintainability in Apple-platform or Swift server projects.",
       "name": "swift-testing-expert",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -323,7 +323,7 @@
       "description": "Write, review, or improve SwiftUI code following best practices for state management, view composition, performance, macOS-specific APIs, and iOS 26+ Liquid Glass adoption. Use when building new SwiftUI features, refactoring existing views, reviewing code quality, or adopting modern SwiftUI patterns.",
       "name": "swiftui-expert-skill",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
@@ -336,7 +336,7 @@
       "description": "Comprehensively reviews SwiftUI code for best practices on modern APIs, maintainability, and performance. Use when reading, writing, or reviewing SwiftUI projects.",
       "name": "swiftui-pro",
       "owner": "base-managed",
-      "source_commit": "a04ca5f7765b8ae9faf7fd175ff36f38a509026a",
+      "source_commit": "8dcdb86183afa98cfa96bb79277bbdb97a0e1514",
       "targets": [
         "native",
         "codex",
