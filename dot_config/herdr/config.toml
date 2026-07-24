@@ -1,0 +1,44 @@
+onboarding = false
+
+# herdr configuration
+# Managed by chezmoi as ~/.config/herdr/config.toml.
+# Reload after editing: `herdr server reload-config`.
+# Print full default schema: `herdr --default-config`.
+
+[theme]
+name = "tokyo-night"
+
+[terminal]
+default_shell = "/opt/homebrew/bin/fish"
+new_cwd = "follow"
+
+[keys]
+prefix = "ctrl+a"
+
+# Physical Cmd+h/j/k/l reach this app as Alt+h/j/k/l (Ghostty translates via esc:<letter>),
+# so AeroSpace keeps owning physical Alt+h/j/k/l for macOS window nav.
+previous_tab = "alt+h"
+next_tab = "alt+l"
+next_workspace = "alt+j"
+previous_workspace = "alt+k"
+
+# close_tab dropped because the workflow is mostly one-pane-per-tab so
+# close_pane (prefix+x) covers it; close_workspace takes its old shift+x slot.
+new_workspace = "prefix+shift+n"
+close_workspace = "prefix+shift+x"
+close_tab = ""
+
+[[keys.command]]
+key = "prefix+a"
+type = "plugin_action"
+command = "dev.herdr-ask.open"
+description = "ask AI"
+
+[ui]
+show_agent_labels_on_pane_borders = true
+[ui.toast]
+delivery = "herdr"
+
+[experimental]
+pane_history = true
+switch_ascii_input_source_in_prefix = false
