@@ -77,6 +77,11 @@ def scan_output_from_root(root):
 class PublicSafetyScannerTests(unittest.TestCase):
     def test_accepts_generic_public_identity(self):
         self.assertEqual(run_scan({"dot_gitconfig": "[user]\nname = Generic\n"}), 0)
+    def test_ignores_git_worktree_pointer_file(self):
+        code, output = scan_output({".git": "gitdir: /" + "Users/private/worktree"})
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "")
+
 
     def test_rejects_hermes_path(self):
         self.assertNotEqual(run_scan({"private_dot_hermes/config.yaml": "x"}), 0)

@@ -311,7 +311,7 @@ def scan(root):
                         for rule in path_rules(relative_path) | {"symlink"}
                     )
                     continue
-                if name == ".DS_Store" or not stat.S_ISREG(mode):
+                if name in {".git", ".DS_Store"} or not stat.S_ISREG(mode):
                     continue
             except (OSError, ValueError):
                 relative_path = path.relative_to(root) if path.is_absolute() else path
