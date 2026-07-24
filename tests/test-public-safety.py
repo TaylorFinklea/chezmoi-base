@@ -281,6 +281,7 @@ class PublicSafetyScannerTests(unittest.TestCase):
                 "`"
                 + https_url("github.com/pointfreeco/swift-concurrency-extras.git")
                 + "`",
+                https_url("github.com/folke/lazy.nvim.git"),
             )
         )
         self.assertEqual(run_scan({"dot_example": remotes}), 0)

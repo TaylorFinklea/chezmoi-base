@@ -40,6 +40,7 @@ ALLOWED_DOCUMENTATION_GIT_REMOTES = frozenset(
         b"https://github.com/Yelp/detect-secrets",
         b"https://github.com/apple/swift-async-algorithms",
         b"https://github.com/astral-sh/ruff-pre-commit",
+        b"https://github.com/folke/lazy.nvim.git",
         b"https://github.com/koalaman/shellcheck-precommit",
         b"https://github.com/pointfreeco/swift-concurrency-extras.git",
         b"https://github.com/rhysd/actionlint",
