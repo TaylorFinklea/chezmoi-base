@@ -7,7 +7,7 @@ description: "Use when running multi-agent or schema-validated orchestration on 
 
 Deterministic orchestration for when Anthropic/Opus is rate-limited (or just for cheap fan-out): the **driver owns the guarantees**, harnesses are dumb headless-JSON workers. Models reach you through the **direct `opencode-go` provider** — a static `api_key` in `~/.pi/agent/auth.json`, **no proxy** (the old LiteLLM/bytesaddle proxy at `localhost:4000` is retired; don't chase it).
 
-For Guildhall/Conductor fleet sessions, queue dispatch, cycle approval, or
+For Guildhall/Undertake fleet sessions, queue dispatch, cycle approval, or
 provider fallback across the backlog, use `guildhall-orchestration`. This skill
 is the lower-level `orchestra` driver reference.
 
@@ -61,7 +61,7 @@ orchestra audit  --before <sha> --after <sha> [--model M] [--repo D] [--state PA
 
 - **Claude Code (usual driver).** Drive the loop here: call the driver via `bun`, or shell `pi` directly **with `< /dev/null`**. Structured output comes from the driver, never assumed raw from the model.
 - **Pi (usual worker / headless).** `ralph -t pi` defaults to the friendly `glm` alias (`opencode-go/glm-5.2`); set `RALPH_PI_MODEL=sol|terra|luna|minimax|qwen|nw-glm|ollama-glm|provider/id` to pin another roster lane. Pi has **no native schema forcing** (maintainer rejected it) — structured output is the driver's `agentWithSchema`, full stop.
-- **OpenCode (alternate, smoke-test).** `opencode run --format json` (the CLI has no schema flag). Native `format:{json_schema}` exists in the SDK/server (issue #10456) but its retry is reportedly broken (#25430), so the driver still validates. OpenCode can use the configured custom provider lanes, including `ollama-cloud/glm-5.2`, `ollama-cloud/kimi-k2.6`, and `ollama-cloud/minimax-m3`; prefer Conductor roster fallbacks for fleet dispatch rather than hardcoding provider policy in prompts.
+- **OpenCode (alternate, smoke-test).** `opencode run --format json` (the CLI has no schema flag). Native `format:{json_schema}` exists in the SDK/server (issue #10456) but its retry is reportedly broken (#25430), so the driver still validates. OpenCode can use the configured custom provider lanes, including `ollama-cloud/glm-5.2`, `ollama-cloud/kimi-k2.6`, and `ollama-cloud/minimax-m3`; prefer Undertake roster fallbacks for fleet dispatch rather than hardcoding provider policy in prompts.
 - **Codex (alternate, smoke-test).** `codex exec --json`; `--output-schema` exists but is reportedly ignored when tools/MCP are active (#15451) → driver validates.
 
 ## ralph loop gates (mechanical, not prompt-trusted)

@@ -1,6 +1,6 @@
 ---
 name: dispatch-to-pi
-description: "Use when offloading bounded work to a different model while you orchestrate, including GPT-5.6 Sol, Terra, and Luna or cheaper Pi workers. Not for Guildhall/Conductor fleet sessions."
+description: "Use when offloading bounded work to a different model while you orchestrate, including GPT-5.6 Sol, Terra, and Luna or cheaper Pi workers. Not for Guildhall/Undertake fleet sessions."
 ---
 
 # Dispatching work to other models (you stay the orchestrator)
@@ -11,8 +11,8 @@ and reserve yourself for Lead work (architecture, decomposition, final review). 
 inverse of `fallback-orchestration` (where Pi *is* the orchestrator); here Pi models are workers
 you dispatch to.
 
-For Guildhall/Conductor fleet sessions, queue dispatch, provider fallback, or
-cycle approval, use `guildhall-orchestration`; Conductor stays the orchestrator.
+For Guildhall/Undertake fleet sessions, queue dispatch, provider fallback, or
+cycle approval, use `guildhall-orchestration`; Undertake stays the orchestrator.
 
 ## The roster — `~/.claude/model-scorecard.md`
 
@@ -60,7 +60,7 @@ Luna `low`/`medium` only for tight Junior work. Pi supports GPT-5.6 through
   are standing pre-authorized** — dispatch without a per-task confirm (still log every run).
 - **The named AGY free lane (`agy-gemini-3.5-flash-free`) is also standing
   pre-authorized**, but this skill does not invoke it; use `ralph -t agy` for
-  direct loops or let Conductor dispatch the roster row.
+  direct loops or let Undertake dispatch the roster row.
 - **Any *other* non-Anthropic model: CONFIRM with the user first.** Propose the offload — "I'll
   hand task X to <model>, ok?" — and wait for a yes before dispatching. Don't silently ship work
   to an unvetted external provider. (Leaving `pi`/`orchestra` un-allowlisted means a Bash prompt

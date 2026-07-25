@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guildhall Orchestration"
+  short_description: "Run Undertake fleet sessions through Guildhall"
+  default_prompt: "Use $guildhall-orchestration to start or resume a Guildhall/Undertake fleet session."

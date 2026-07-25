@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: "Use when orchestrating multi-step work as a Lead-tier session — dispatching to cheaper models, distributing load, or picking adversarial reviewers — or when the user says delegate/distribute/dispatch/review with another model. Loads the delegation posture, panel criteria, and model-family map. Not for Conductor/Guildhall/Arena/Ralph sessions."
+description: "Use when orchestrating multi-step work as a Lead-tier session — dispatching to cheaper models, distributing load, or picking adversarial reviewers — or when the user says delegate/distribute/dispatch/review with another model. Loads the delegation posture, panel criteria, and model-family map. Not for native Undertake plan/review, Guildhall, or Ralph sessions."
 ---
 
 # Delegate — orchestrator briefing
@@ -25,13 +25,13 @@ with tangled context stays retained; an isolated L task can go.
 
 - Standing pre-authorized list: AGENTS.md `## Model dispatch / offloading`.
   Anything else: confirm with the user BEFORE dispatching.
-- Enabled in the Bursar roster — `bursar roster snapshot --json`; fallback:
-  read `~/git/bursar/roster.toml` directly; neither available
-  → pre-authorized list only, fail closed.
+- Enabled in the Musterroll roster — `musterroll roster snapshot --json`;
+  fallback: read `~/git/musterroll/roster.toml` directly;
+  neither available → pre-authorized list only, fail closed.
 - `data_policy`: `free-trains-input` lanes need repo policy or per-bead
   opt-in.
 - Reachable from THIS harness — see `references/panels.md` reachability.
-- Quota: `bursar status --json` when available; runtime 429s are the real
+- Quota: `musterroll status --json` when available; runtime 429s are the real
   signal. Never invent quota state from model prose.
 
 ## Routing (decides WHO)
@@ -39,6 +39,11 @@ with tangled context stays retained; an isolated L task can go.
 Follow AGENTS.md `## Tiered model routing` (theory:
 `~/.claude/templates/tiers.md`): lowest capable tier, most efficient model
 whose ceiling ≥ complexity.
+When Anthropic differs from the artifact author's family and Musterroll plus
+the current harness confirm eligibility and reachability, `claude-opus-5` at `max`
+is the preferred different-family adversarial reviewer and an available
+Lead/Senior delegation option. `claude-opus-4-8` remains the fallback; an enabled
+profile never proves credentials or live provider availability.
 
 ## Panels
 
@@ -56,11 +61,11 @@ owns dispatch mechanics and the scoring format.
 
 - This skill is **data + criteria, never procedure** — it names shapes and
   membership rules, not orchestration logic.
-- Single interactive session only. Queued, scheduled, or multi-repo work is
-  Conductor's (see `guildhall-orchestration`). Conductor / Arena / Ralph
-  sessions never load this posture.
+- Single interactive session only. Queued, scheduled, multi-repo, or native
+  Undertake `plan`/`review` work is Undertake's (see
+  `guildhall-orchestration`). Undertake / Ralph sessions never load this posture.
 - Mechanics live elsewhere: `dispatch-to-pi` (pi offload),
   `fallback-orchestration` (orchestra driver), `local-models` (Ollama lane).
-- When the Conductor-backed `adversarial-design-review` skill ships (spec
+- When the Undertake-backed `adversarial-design-review` skill ships (spec
   2026-07-13), formal N-reviewer runs defer to it; this skill's preset stays
   the quick interactive path.

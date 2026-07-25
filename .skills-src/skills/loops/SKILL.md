@@ -1,15 +1,14 @@
 ---
 name: loops
-description: Use when running direct Ralph phase loops over one repo's `.docs/ai/current-state.md` Plan and deciding where that simple loop runs. Not for Guildhall/Conductor cycle dispatch, beads fleet orchestration, provider fallback, or Arena comparisons.
+description: Use when running direct Ralph phase loops over one repo's `.docs/ai/current-state.md` Plan and deciding where that simple loop runs. Not for Guildhall/Undertake native plan/review jobs, cycle dispatch, beads fleet orchestration, or provider fallback.
 ---
 
 # Loop strategy — where simple Ralph phase loops run
 
 Use this for plain `ralph` loops over one repo's `.docs/ai/current-state.md`
-Plan. If the request mentions Guildhall, Conductor cycle/dispatch, provider
-fallback, fleet queues, or beads orchestration, use `guildhall-orchestration`
-instead. If it asks to compare harness/model candidates on the same bead, use
-`conductor-arena`.
+Plan. If the request mentions Guildhall, Undertake `plan`/`review`, cycle or
+dispatch, provider fallback, fleet queues, or beads orchestration, use
+`guildhall-orchestration` instead.
 
 Route a simple loop by **who orchestrates** and **which model does the work**.
 Rule of thumb: **if it's a Claude model and you're already in Claude Code, keep
