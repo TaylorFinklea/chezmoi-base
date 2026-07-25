@@ -31,12 +31,6 @@ activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
-[[skills]]
-name = "conductor-arena"
-targets = ["native", "codex", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
 
 [[skills]]
 name = "core-data-expert"
