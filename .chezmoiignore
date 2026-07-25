@@ -7,6 +7,11 @@ tests/
 .git/
 .gitignore
 .DS_Store
+.skillcatalog.toml
+.skillcatalog.lock.json
+.skills-src
+.skills-src/**
+
 
 # ai-scratch/ is repo-local cross-harness scratch — globally gitignored, never
 # a chezmoi target

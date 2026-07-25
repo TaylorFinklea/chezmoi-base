@@ -1,0 +1,176 @@
+# ~/.zshrc - Interactive shell configuration
+
+# ============================================================================
+# SHELL OPTIONS
+# ============================================================================
+
+# Enable completion system
+autoload -Uz compinit
+compinit
+
+# Case-insensitive completion
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+
+# ============================================================================
+# HISTORY
+# ============================================================================
+
+HISTFILE="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/history"
+HISTSIZE=10000
+SAVEHIST=10000
+
+# Create history directory if it doesn't exist
+mkdir -p "$(dirname "$HISTFILE")"
+
+# History options
+setopt HIST_IGNORE_ALL_DUPS  # Don't record duplicate entries
+setopt HIST_FIND_NO_DUPS     # Don't display duplicates when searching
+setopt HIST_IGNORE_SPACE     # Don't record commands starting with space
+setopt SHARE_HISTORY         # Share history between sessions
+
+# ============================================================================
+# PLUGINS & TOOLS
+# ============================================================================
+
+# Zsh autosuggestions (if installed via Homebrew)
+if [ -f /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]; then
+    source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+# Zsh syntax highlighting (if installed via Homebrew)
+if [ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
+    source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+    
+    # Customize syntax highlighting colors
+    typeset -A ZSH_HIGHLIGHT_STYLES
+    ZSH_HIGHLIGHT_STYLES[command]='fg=cyan'
+    ZSH_HIGHLIGHT_STYLES[builtin]='fg=blue'
+    ZSH_HIGHLIGHT_STYLES[function]='fg=magenta'
+    ZSH_HIGHLIGHT_STYLES[alias]='fg=yellow'
+fi
+
+# Zoxide (smart cd)
+if command -v zoxide &> /dev/null; then
+    eval "$(zoxide init zsh)"
+fi
+
+# Starship prompt
+if command -v starship &> /dev/null; then
+    eval "$(starship init zsh)"
+fi
+
+# Atuin (shell history)
+if command -v atuin &> /dev/null; then
+    eval "$(atuin init zsh)"
+fi
+
+# ============================================================================
+# ALIASES
+# ============================================================================
+
+# Git shortcuts
+alias ga="git add ."
+alias gc="git commit -m"
+alias gpu="git push"
+alias gpl="git pull"
+alias gs="git status"
+alias gd="git diff"
+alias gl="git log --oneline --graph --decorate"
+
+# difftastic: structural diff on demand (delta stays the default pager)
+alias gdt='GIT_EXTERNAL_DIFF=difft git diff'
+alias gst='GIT_EXTERNAL_DIFF=difft git show'
+alias gdl='GIT_EXTERNAL_DIFF=difft git log -p'
+
+# Modern replacements
+alias y="yazi"           # File manager
+
+# List variations
+alias ll="ls -l"
+alias la="ls -lah"
+alias lt="ls -laht"      # Sort by time
+
+# Modern utilities (if installed)
+command -v eza &> /dev/null && alias ls="eza --icons"
+command -v eza &> /dev/null && alias ll="eza --icons -l"
+command -v eza &> /dev/null && alias la="eza --icons -la"
+command -v bat &> /dev/null && alias cat="bat"
+command -v btm &> /dev/null && alias top="btm"
+
+# Safety nets
+alias rm="rm -i"
+alias mv="mv -i"
+alias cp="cp -i"
+
+# Chezmoi shortcuts
+alias cz="chezmoi"
+alias cup="chezmoi-sync"          # Pull, classify drift, and safely converge
+alias czd="chezmoi diff"           # See what would change
+alias cze="chezmoi edit"           # Edit a managed file
+alias czs="chezmoi status"         # Check status
+
+# Claude shortcuts
+alias c="claude"
+alias cdang="claude --permission-mode bypassPermissions"
+alias ccr="claude --resume --model opusplan --effort auto"
+
+# ============================================================================
+# FUNCTIONS
+# ============================================================================
+
+# Quick directory navigation
+mkcd() {
+    mkdir -p "$1" && cd "$1"
+}
+
+# Extract various archive types
+extract() {
+    if [ -f "$1" ]; then
+        case "$1" in
+            *.tar.bz2)  tar xjf "$1"    ;;
+            *.tar.gz)   tar xzf "$1"    ;;
+            *.bz2)      bunzip2 "$1"    ;;
+            *.gz)       gunzip "$1"     ;;
+            *.tar)      tar xf "$1"     ;;
+            *.tbz2)     tar xjf "$1"    ;;
+            *.tgz)      tar xzf "$1"    ;;
+            *.zip)      unzip "$1"      ;;
+            *.Z)        uncompress "$1" ;;
+            *.7z)       7z x "$1"       ;;
+            *)          echo "'$1' cannot be extracted" ;;
+        esac
+    else
+        echo "'$1' is not a valid file"
+    fi
+}
+
+# Quick find
+f() {
+    find . -name "*$1*"
+}
+
+# ============================================================================
+# KEY BINDINGS
+# ============================================================================
+
+# Emacs-style key bindings
+bindkey -e
+
+# Better history search
+bindkey '^R' history-incremental-search-backward
+bindkey '^S' history-incremental-search-forward
+
+# ============================================================================
+# ENVIRONMENT-SPECIFIC SETTINGS
+# ============================================================================
+
+# Load local customizations if they exist
+[ -f ~/.zshrc.local ] && source ~/.zshrc.local
+
+# ============================================================================
+# FINAL SETUP
+# ============================================================================
+
+# Ensure we're using the right locale
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8

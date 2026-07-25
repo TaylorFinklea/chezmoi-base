@@ -1,0 +1,26 @@
+# ~/.zshenv - Environment variables for zsh
+# This file is always sourced, so it should contain only environment variables
+
+# Editor — set here (not just in interactive rc) so child processes launched
+# from non-interactive zsh sessions (mosh-server → sh -lc → herdr, etc.)
+# inherit it. herdr's edit_scrollback uses ${EDITOR:-vi}.
+export EDITOR=nvim
+export VISUAL=nvim
+
+# Homebrew
+eval "$(/opt/homebrew/bin/brew shellenv zsh)"
+
+# Local bin directory
+export PATH="$HOME/.local/bin:$PATH"
+
+# Doom Emacs CLI
+[ -d "$HOME/.config/emacs/bin" ] && export PATH="$HOME/.config/emacs/bin:$PATH"
+
+# Add cargo bin if it exists
+[ -d "$HOME/.cargo/bin" ] && export PATH="$HOME/.cargo/bin:$PATH"
+
+# Add go bin if it exists
+[ -d "$HOME/go/bin" ] && export PATH="$HOME/go/bin:$PATH"
+
+# Profile-specific environment belongs to the active overlay.
+[ -f "$HOME/.zshenv.local" ] && source "$HOME/.zshenv.local"

@@ -1,0 +1,5 @@
+skills:
+  enableClaudeUser: true
+  enableAgentsUser: false
+  enableCodexUser: false
+  enablePiUser: false

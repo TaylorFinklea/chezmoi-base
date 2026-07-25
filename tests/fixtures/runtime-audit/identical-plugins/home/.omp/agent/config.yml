@@ -1,0 +1,7 @@
+packages:
+  - id: omp@fixture
+    path: packages/omp
+enableClaudeUser: true
+enableAgentsUser: false
+enableCodexUser: false
+enablePiUser: false

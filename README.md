@@ -23,6 +23,8 @@ The runner supports `preflight`, `diff`, and `verify`; it never runs `apply`. Wi
 ```
 
 These normal commands do not write managed targets to `HOME`.
+Each successful preflight runs target-ownership validation before `skillsync check`. Work preflight validates its catalog and lock without reading work Skill sources unless `--require-sources` is supplied. `diff` appends the non-applying `skillsync diff`. `sync` requires a source-validating Skills check before any apply, then runs `skillsync sync --non-interactive` only after repository updates, preflight, and a clean chezmoi sync; Skills conflicts are reported, notified, and left untouched.
+
 
 ## Isolated validation
 

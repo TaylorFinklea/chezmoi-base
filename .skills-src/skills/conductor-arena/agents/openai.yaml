@@ -1,0 +1,4 @@
+interface:
+  display_name: "Conductor Arena"
+  short_description: "Run bead arenas through Conductor"
+  default_prompt: "Use $conductor-arena to pick a suitable ready bead and run a Conductor Arena comparison."
