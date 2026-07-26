@@ -27,7 +27,7 @@ If the prompt says Guildhall or Undertake, start here.
 | Native Undertake `plan` or `review` job, fleet session, queue scan, cycle approval, provider fallback | `guildhall-orchestration` |
 | Single repo `.docs/ai/current-state.md` phase loop | `loops` |
 | Schema-validated non-Opus helper/verifier work | `fallback-orchestration` |
-| One bounded worker task while you stay orchestrator | `dispatch-to-pi` |
+| One bounded worker task while you stay orchestrator | `dispatch-worker` |
 
 ## Ownership
 

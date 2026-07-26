@@ -51,11 +51,11 @@ Review shapes, the model-family map, and per-harness reachability:
 `references/panels.md`. Adversarial reviews use the output contract in
 `references/review-contract.md`.
 
-## Logging
+## Provenance
 
-Every non-default dispatch gets a one-line Experience Log entry
-(`~/.claude/model-scorecard.md`) per AGENTS.md; the `dispatch-to-pi` skill
-owns dispatch mechanics and the scoring format.
+Record the author profile for every delegated artifact. Use Afterfact evidence
+when the execution path supports it; `dispatch-worker` owns the mechanics and
+the interim Experience Log behavior required by AGENTS.md.
 
 ## Boundaries
 
@@ -64,7 +64,7 @@ owns dispatch mechanics and the scoring format.
 - Single interactive session only. Queued, scheduled, multi-repo, or native
   Undertake `plan`/`review` work is Undertake's (see
   `guildhall-orchestration`). Undertake / Ralph sessions never load this posture.
-- Mechanics live elsewhere: `dispatch-to-pi` (pi offload),
+- Mechanics live elsewhere: `dispatch-worker` (one bounded worker task),
   `fallback-orchestration` (orchestra driver), `local-models` (Ollama lane).
 - When the Undertake-backed `adversarial-design-review` skill ships (spec
   2026-07-13), formal N-reviewer runs defer to it; this skill's preset stays

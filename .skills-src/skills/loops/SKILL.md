@@ -86,5 +86,5 @@ it in-session; everything else loops through `ralph`.**
   audits each commit with the orchestra fallback verifier and stops on failure.
 - Headless iterations never run `chezmoi apply` — applying to live HOME stays a human step.
 
-For **one-shot** offload (not looping) and the live roster / dispatch IDs, see the
-`dispatch-to-pi` skill and `~/.claude/model-scorecard.md`.
+For **one-shot** offload (not looping), see `dispatch-worker`; model/profile
+selection comes from `delegate` and Musterroll.

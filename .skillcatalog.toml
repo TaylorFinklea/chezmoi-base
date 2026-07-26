@@ -47,7 +47,7 @@ upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
-name = "dispatch-to-pi"
+name = "dispatch-worker"
 targets = ["native", "codex", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
