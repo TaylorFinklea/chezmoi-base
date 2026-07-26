@@ -74,8 +74,17 @@ Routine convergence runs through `scripts/chezmoi-compose sync` (shim:
 `chezmoi-sync`; scheduled daily via launchd). Non-interactive runs apply
 *clean* drift only — a file changed on both sides is never auto-resolved; it
 is reported, notified, and waits for an interactive `chezmoi-sync` where the
-user picks overwrite / import / skip. Targeted repair: `chezmoi-compose
-apply <role> <target>...`. Bare `chezmoi apply` and headless agent-loop
-applies remain forbidden. Expected perpetual drift (skip-listed by sync):
-`.claude/settings.json` and `.codex/config.toml` are runtime-rewritten by
-their apps; anything beyond those two files is real.
+user picks overwrite / import / skip. Targeted repair:
+`chezmoi-compose apply <role> <target>...`.
+
+An interactive agent session may run `scripts/chezmoi-compose sync` or a
+targeted composed apply only when the user explicitly authorizes that exact
+operation in the current conversation. The agent restates command and scope,
+does not broaden targets, and leaves every conflict choice to the user.
+Authorization expires after that operation or when the conversation ends.
+Bare `chezmoi apply`, headless/Ralph applies, unattended conflict resolution,
+and unapproved `--force` remain forbidden.
+
+Expected perpetual drift (skip-listed by sync): `.claude/settings.json` and
+`.codex/config.toml` are runtime-rewritten by their apps; anything beyond those
+two files is real.
