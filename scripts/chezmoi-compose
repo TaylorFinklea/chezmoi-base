@@ -328,7 +328,8 @@ print_summary() {
 }
 
 sync_run() {
-  local source skillsync_status
+  local source skillsync_status pending_status
+  pending_status=0
 
   if [ "$no_pull" -eq 0 ]; then
     for source in "${sources[@]}"; do
@@ -346,8 +347,9 @@ sync_run() {
   if [ "${#sync_decisions[@]}" -gt 0 ]; then
     if [ "$non_interactive" -eq 1 ]; then
       notify_decisions "${#sync_decisions[@]}"
+      return 2
     fi
-    return 2
+    pending_status=2
   fi
   skillsync_status=0
   run_skillsync sync --non-interactive || skillsync_status=$?
@@ -355,6 +357,7 @@ sync_run() {
     notify_skillsync_conflicts
     return "$skillsync_status"
   fi
+  return "$pending_status"
 }
 
 apply_targets_cmd() {

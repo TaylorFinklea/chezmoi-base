@@ -12,7 +12,7 @@ Permit an interactive agent session to run the composed chezmoi front door only 
 - Bare `chezmoi apply`, headless/Ralph applies, unattended conflict resolution, `--force`, and scope expansion remain forbidden unless separately and explicitly authorized where the composed command supports them.
 - Interactive conflicts remain interactive; the agent does not guess an overwrite/import/skip choice.
 - The agent verifies only the authorized targets after execution and reports any unrelated drift without changing it.
-
-## Current Authorization
-
-The user explicitly authorized `scripts/chezmoi-compose sync` in this conversation after approving this policy amendment. Once the policy commits, the agent may execute that one sync and verify `dispatch-worker` activation.
+- An explicit interactive skip remains an unresolved decision and preserves exit
+  status 2, but it does not prevent independent clean phases such as Skill
+  projection from running. Non-interactive pending decisions still stop before
+  those phases.

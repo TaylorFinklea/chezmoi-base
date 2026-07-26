@@ -30,7 +30,9 @@ run_compose() {
   PATH="$fake_bin:$PATH" "$runner" "$@"
 }
 
-run_compose_tty() {
+run_compose_tty_choice() {
+  choice=$1
+  shift
   export CHEZMOI_BASE_SOURCE="$tmp/base"
   export CHEZMOI_PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE_OVERRIDE:-$tmp/personal}"
   export CHEZMOI_WORK_SOURCE="$tmp/work"
@@ -38,6 +40,7 @@ run_compose_tty() {
   export CHEZMOI_STATE_ROOT="$tmp/state"
   export CHEZMOI_DESTINATION="$tmp/destination"
   export CHEZMOI_CALL_LOG="$call_log"
+  export CHEZMOI_TEST_CHOICE="$choice"
 
   PATH="$fake_bin:$PATH" /usr/bin/expect -f - -- "$runner" "$@" <<'EOF'
 set timeout 10
@@ -45,13 +48,17 @@ set command [lindex $argv 0]
 set arguments [lrange $argv 1 end]
 spawn -noecho $command {*}$arguments
 expect {
-  -exact {[o]verwrite from source / [i]mport into source / [s]kip? } { send -- "o\r" }
+  -exact {[o]verwrite from source / [i]mport into source / [s]kip? } { send -- "$env(CHEZMOI_TEST_CHOICE)\r" }
   timeout { exit 72 }
 }
 expect eof
 set result [wait]
 exit [lindex $result 3]
 EOF
+}
+
+run_compose_tty() {
+  run_compose_tty_choice o "$@"
 }
 
 assert_read_only_execution() {
@@ -610,6 +617,21 @@ if ! grep -Fq '.tmux.conf' "$decisions_out"; then
 fi
 if ! grep -Fqx 'osascript-notify' "$call_log"; then
   fail 'pending decisions should trigger a notification'
+fi
+
+# An explicit interactive skip preserves the conflict but still runs the
+# independent Skill projection phase before returning the pending-decision code.
+: > "$call_log"
+if run_compose_tty_choice s sync personal --no-pull > "$tmp/skip.out" 2>&1; then
+  fail 'interactive skip should retain exit 2 for the unresolved decision'
+else
+  skip_status=$?
+fi
+if [ "$skip_status" -ne 2 ]; then
+  fail "interactive skip should exit 2 after later clean phases, got $skip_status"
+fi
+if ! grep -Fqx "skillsync:sync:origin=source:profile=personal:base=$tmp/base:overlay=$tmp/personal:work=:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=1" "$call_log"; then
+  fail 'interactive skip should still run skillsync'
 fi
 
 : > "$call_log"
