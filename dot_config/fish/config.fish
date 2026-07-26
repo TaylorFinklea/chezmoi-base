@@ -95,9 +95,8 @@ alias czd="chezmoi diff"          # See what would change
 alias cze="chezmoi edit"          # Edit a managed file
 alias czs="chezmoi status"        # Check status
 
-# Claude shortcuts
-alias c="claude"
-alias cdang="claude --permission-mode bypassPermissions"
+# AI harness shortcuts
+alias c="codex"
 alias ccr="claude --resume --model opusplan --effort auto"
 
 # ============================================================================
