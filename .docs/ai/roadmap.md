@@ -11,16 +11,26 @@ the front door for all dotfile changes on any machine.
 
 ### Now
 
-- [ ] **Materialize the `native` (Claude Code) skill target.** `~/.claude/skills`
-      does not exist; `skillsync diff` reports `create native/<skill>` for all 39
-      catalog skills with a `native` target — including `delegate` and
-      `dispatch-worker`, which AGENTS.md assumes are available to every harness.
-      Codex and Pi have their skills on disk but skillsync reports all 91 as
-      `unmanaged` (placed outside skillsync, so it does not own them).
-      Caveat: `skillsync check` reports **clean** here — it validates catalog/lock
-      consistency, not whether targets were ever materialized. Use `diff`, not
-      `check`, to see this class of gap.
-      Verify: `skillsync diff --profile personal --base-root ~/git/chezmoi-base --overlay-root ~/git/chezmoi-personal` reports no `create native/*`.
+- [x] **Materialize the `native` (Claude Code) skill target.** Done 2026-07-27:
+      `skillsync sync` created all 41 skills in `~/.claude/skills` (39 + the two
+      security skills added the same day). `delegate` and `dispatch-worker` are
+      now present, as AGENTS.md assumes. Codex/Pi/Hermes trees were left
+      untouched — `cmd_sync` acts only on create/recreate/update and merely
+      *reports* unmanaged entries.
+      Caveat: `skillsync check` reported **clean** throughout this gap, and
+      again while the lock sat stale after a catalog edit. `check` validates
+      catalog/lock internals only — it compares neither lock-to-catalog nor
+      catalog-to-disk. Use `diff` for both classes of drift.
+      Caveat: `sync` exits **1** whenever any unmanaged entry exists (91 do,
+      pre-existing). Exit 1 here is normal, not failure.
+      Verify: `skillsync diff …` reports no `create native/*` (now 91 unmanaged, 0 create).
+
+- [ ] **Decide whether to `skillsync migrate` the 91 unmanaged codex/pi/hermes
+      skills.** They work today but skillsync doesn't own them, so they drift
+      silently and `sync` will never update them. `migrate` adopts only entries
+      whose `tree_hash` already matches the composed output and refuses the rest,
+      so it is non-destructive — but the refusals then need hand-reconciling.
+      Verify: `skillsync diff …` reports 0 unmanaged.
 
 - [x] **Decide which codex-only skills gain `native`.** Resolved 2026-07-27:
       `security-best-practices` + `security-threat-model` gained `native`
