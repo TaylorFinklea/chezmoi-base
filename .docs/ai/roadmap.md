@@ -22,17 +22,15 @@ the front door for all dotfile changes on any machine.
       `check`, to see this class of gap.
       Verify: `skillsync diff --profile personal --base-root ~/git/chezmoi-base --overlay-root ~/git/chezmoi-personal` reports no `create native/*`.
 
-- [ ] **Decide which codex-only skills gain `native`.** 13 skills in the
-      *personal* catalog are `targets = ["codex"]`: chatgpt-apps,
-      cloudflare-deploy, doc, figma, frontend-skill, jupyter-notebook, pdf,
-      playwright, screenshot, security-best-practices, security-threat-model,
-      sora, speech. A further 3 are on disk in `~/.codex/skills` but in no
-      catalog at all: imagegen, openai-docs, transcribe.
-      Caveat: several overlap Claude Code built-ins (screenshot/playwright vs
-      claude-in-chrome; pdf vs native PDF Read; jupyter-notebook vs NotebookEdit;
-      frontend-skill vs the frontend-design plugin) — sync only what adds
-      something. The OpenAI-product skills (sora, speech, imagegen, transcribe,
-      openai-docs, chatgpt-apps) are not portable to Claude.
+- [x] **Decide which codex-only skills gain `native`.** Resolved 2026-07-27:
+      `security-best-practices` + `security-threat-model` gained `native`
+      (chezmoi-personal `5a89ea2`). The rest stay codex-only — see
+      decisions.md for the skip rationale, so it isn't re-litigated.
+      Remaining codex-only: chatgpt-apps, cloudflare-deploy, doc, figma,
+      frontend-skill, jupyter-notebook, pdf, playwright, screenshot, sora,
+      speech. Uncatalogued on disk: imagegen, openai-docs, transcribe.
+      Caveat: the two new ones are *eligible* only — they do not exist in
+      `~/.claude/skills` until the sync item above runs.
 
 - [ ] **Refresh `~/.claude/templates/handoff/current-state.md`.** It still seeds
       the pre-loop-state format ("Last Session Summary", "Build Status"), which
