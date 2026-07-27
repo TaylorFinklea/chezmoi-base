@@ -632,7 +632,21 @@ def load_lock(lock_path: Path) -> Optional[dict]:
 
 
 def check_lock_freshness(catalog: Catalog, lock: Optional[dict]) -> list[str]:
-    """Names whose current on-disk tree hash no longer matches the lock (or are unlocked)."""
+    """Names whose lock entry no longer describes the catalog (or are unlocked).
+
+    Two independent sources of staleness:
+      * the skill's on-disk source tree drifted (`tree_hash`);
+      * a catalog-derived field was edited (`targets`, `transform`). These live
+        only in the catalog, so they move without touching the source tree —
+        comparing `tree_hash` alone reports such an edit as clean.
+
+    `source_commit` is deliberately NOT compared: it records repo HEAD at lock
+    time, so committing the lock itself moves HEAD past it and every skill would
+    read as permanently stale. `description`/`name` need no separate comparison —
+    they come from SKILL.md, which `tree_hash` already covers.
+
+    `targets` compares order-insensitively; target order carries no meaning.
+    """
     if lock is None:
         return [r.name for r in catalog.skills]
     stale = []
@@ -642,6 +656,10 @@ def check_lock_freshness(catalog: Catalog, lock: Optional[dict]) -> list[str]:
             stale.append(r.name)
             continue
         if tree_hash(catalog.source_root / r.name) != entry.get("tree_hash"):
+            stale.append(r.name)
+        elif set(r.targets) != set(entry.get("targets") or ()):
+            stale.append(r.name)
+        elif r.transform != entry.get("transform"):
             stale.append(r.name)
     return stale
 

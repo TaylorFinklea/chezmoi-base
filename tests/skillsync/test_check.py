@@ -1,7 +1,8 @@
+import json
 import shutil
 from pathlib import Path
 
-from .conftest import make_base_repo, make_personal_repo, make_work_repo
+from .conftest import make_base_repo, make_personal_repo, make_work_repo, write_catalog_toml
 
 
 def _check(ss, base, overlay, profile, tmp_path, extra=()):
@@ -32,6 +33,48 @@ def test_check_reports_stale_lock_as_drift(ss, tmp_path):
     skill_md = base / ".skills-src" / "skills" / "alpha" / "SKILL.md"
     skill_md.write_text(skill_md.read_text() + "drift\n")
     assert _check(ss, base, personal, "personal", tmp_path) == 1
+
+
+def _rewrite_base_catalog(base, records):
+    write_catalog_toml(base, owner="base-managed", roles=["personal", "work"],
+                       source_root=".skills-src/skills", records=records)
+
+
+def test_check_reports_catalog_target_change_as_stale_lock(ss, tmp_path):
+    """A catalog-only edit leaves source content untouched, so tree_hash still
+    matches. The lock records `targets`, so check must still call it stale."""
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native", "codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"])
+    assert _lock(ss, base, personal, "personal", tmp_path) == 0
+    assert _check(ss, base, personal, "personal", tmp_path) == 0
+
+    _rewrite_base_catalog(base, [{"name": "alpha", "targets": ["native", "codex", "pi"]}])
+    assert _check(ss, base, personal, "personal", tmp_path) == 1
+
+
+def test_check_reports_catalog_transform_change_as_stale_lock(ss, tmp_path):
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native", "codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"])
+    assert _lock(ss, base, personal, "personal", tmp_path) == 0
+
+    _rewrite_base_catalog(
+        base, [{"name": "alpha", "targets": ["native", "codex"], "transform": "codex-reduced"}])
+    assert _check(ss, base, personal, "personal", tmp_path) == 1
+
+
+def test_check_ignores_source_commit_churn(ss, tmp_path):
+    """source_commit records repo HEAD at lock time, so it goes stale on every
+    commit. Comparing it would make the lock permanently stale — it must not
+    count as drift."""
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native", "codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"])
+    assert _lock(ss, base, personal, "personal", tmp_path) == 0
+
+    lock_path = base / ".skillcatalog.lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["skills"]["alpha"]["source_commit"] = "0" * 40
+    lock_path.write_text(json.dumps(lock))
+    assert _check(ss, base, personal, "personal", tmp_path) == 0
 
 
 def test_check_invalid_composition_returns_two(ss, tmp_path):
