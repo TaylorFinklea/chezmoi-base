@@ -7,6 +7,9 @@
 export EDITOR=nvim
 export VISUAL=nvim
 
+# Claude Code's bundled Bun runtime can deadlock while enumerating macOS trust settings.
+export CLAUDE_CODE_CERT_STORE=bundled
+
 # Homebrew
 eval "$(/opt/homebrew/bin/brew shellenv zsh)"
 

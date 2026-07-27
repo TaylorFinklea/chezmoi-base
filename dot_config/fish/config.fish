@@ -178,3 +178,6 @@ set -gx LANG en_US.UTF-8
 set -gx LC_ALL en_US.UTF-8
 set -gx EDITOR nvim
 set -gx VISUAL nvim
+
+# Avoid Claude Code's bundled Bun runtime deadlocking on macOS trust enumeration.
+set -gx CLAUDE_CODE_CERT_STORE bundled
