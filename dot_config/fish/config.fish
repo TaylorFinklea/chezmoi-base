@@ -96,7 +96,8 @@ alias cze="chezmoi edit"          # Edit a managed file
 alias czs="chezmoi status"        # Check status
 
 # AI harness shortcuts
-alias c="codex"
+alias c="claude --model opus --effort ultracode --permission-mode auto"
+alias cx="codex"
 alias ccr="claude --resume --model opusplan --effort auto"
 
 # ============================================================================
