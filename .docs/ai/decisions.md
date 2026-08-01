@@ -66,3 +66,22 @@ journal prose in `current-state.md`. The shipped template predates that rule.
 
 **Follow-up**: `~/.claude/templates/handoff/current-state.md` is stale and will
 keep seeding the wrong shape into every new repo — see roadmap Now.
+
+## [2026-08-01] `herdr-ask` converges through both release channels from base
+
+**Context**: Base already manages the shared `herdr-ask` configuration and a
+Herdr keybinding that invokes `dev.herdr-ask.open`, but fresh machines received
+neither the PATH-visible binary nor the plugin providing that action.
+
+**Decision**: A base-owned run-on-change script pins version 0.1.0, installs or
+upgrades `taylorfinklea/tap/herdr-ask`, and installs or refreshes the matching
+`TaylorFinklea/herdr-ask` Herdr plugin tag. Normal composed sync runs the script
+for both personal and work roles.
+
+**Alternatives considered**: Homebrew only plus changing the keybinding to a
+direct popup (rejected — changes the existing plugin-action behavior); plugin
+only (rejected — leaves no standalone `herdr-ask` command on PATH); duplicate
+package entries in both overlays (rejected — two owners can drift).
+
+**Upgrade rule**: Bump the version literal in the base script when publishing a
+new release. Its content change schedules another run on every machine.

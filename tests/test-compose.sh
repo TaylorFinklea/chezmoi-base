@@ -569,7 +569,7 @@ fi
 rm "$tmp/personal/fake-status.txt" "$tmp/personal/fake-diff.txt"
 
 # run-on-change scripts apply in isolation; unrelated source drift stays untouched
-script_target='.chezmoiscripts/install-managed-update.sh'
+script_target='install-managed-update.sh'
 unrelated_target='unrelated/missing-file'
 printf ' R %s\nM  %s\n' "$script_target" "$unrelated_target" > "$tmp/personal/fake-status.txt"
 rm -rf "$tmp/destination"
@@ -582,7 +582,7 @@ if [ "$(grep -Fc "apply-scripts:$tmp/personal:--include scripts" "$call_log")" -
   fail 'sync should invoke script-only apply exactly once for the source'
 fi
 if grep -Fq "$script_target" "$tmp/script-sync.out"; then
-  fail 'script pseudo-target should not enter the decision queue'
+  fail 'script target should not enter the decision queue'
 fi
 if grep -F "apply-scripts:" "$call_log" | grep -Fq -- '--force'; then
   fail 'script-only apply must not use --force'

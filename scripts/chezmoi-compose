@@ -193,7 +193,7 @@ classify_source() {
     code=${line:0:2}
     target=${line:3}
     abs="$DESTINATION/$target"
-    if [ "$code" = ' R' ] && [[ "$target" == .chezmoiscripts/* ]]; then
+    if [ "$code" = ' R' ]; then
       scripts_pending=1
       continue
     fi
