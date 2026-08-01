@@ -11,6 +11,15 @@ the front door for all dotfile changes on any machine.
 
 ### Now
 
+- [ ] **Herdr Ask OMP backend — source ready; human apply pending**
+      (2026-08-01). Base now renders a safe custom-process `omp` backend with
+      sessions, tools, LSP, PTY execution, extensions, skills, and rules
+      disabled; `pi` remains the default. Personal preflight and released
+      Herdr Ask 0.1.0 validation pass. User to run the targeted composed apply
+      for `~/Library/Application Support/herdr-ask/config.toml`, then
+      `herdr-ask doctor omp`. Work-profile preflight remains unverified on this
+      Mac because `~/git/chezmoi-work` is absent.
+
 - [x] **Materialize the `native` (Claude Code) skill target.** Done 2026-07-27:
       `skillsync sync` created all 41 skills in `~/.claude/skills` (39 + the two
       security skills added the same day). `delegate` and `dispatch-worker` are

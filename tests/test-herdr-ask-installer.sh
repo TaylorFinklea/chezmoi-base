@@ -6,6 +6,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 installer="$repo_root/run_onchange_after_20-install-herdr-ask.sh"
+managed_config="$repo_root/private_Library/private_Application Support/herdr-ask/config.toml"
 fake_bin="$tmp/bin"
 state_dir="$tmp/state"
 call_log="$tmp/calls.log"
@@ -16,6 +17,39 @@ fail() {
 }
 
 mkdir -p "$fake_bin" "$state_dir"
+
+awk '
+  /^\[backends\.omp\]$/ { capture = 1 }
+  capture && /^\[/ && $0 != "[backends.omp]" { exit }
+  capture { print }
+' "$managed_config" > "$tmp/omp-config.actual"
+
+cat > "$tmp/omp-config.expected" <<'EOF'
+[backends.omp]
+kind = "process"
+command = [
+  "omp",
+  "--print",
+  "--no-session",
+  "--no-tools",
+  "--no-lsp",
+  "--no-pty",
+  "--no-extensions",
+  "--no-skills",
+  "--no-rules",
+  "--system-prompt",
+  "{{system_prompt}}",
+  "--model",
+  "{{model}}",
+]
+prompt_transport = "stdin"
+model = "auto"
+timeout_seconds = 60
+EOF
+
+if ! cmp -s "$tmp/omp-config.expected" "$tmp/omp-config.actual"; then
+  fail 'managed config does not contain the safe OMP backend'
+fi
 
 cat > "$fake_bin/brew" <<'EOF'
 #!/bin/sh

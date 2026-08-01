@@ -85,3 +85,20 @@ package entries in both overlays (rejected — two owners can drift).
 
 **Upgrade rule**: Bump the version literal in the base script when publishing a
 new release. Its content change schedules another run on every machine.
+
+## [2026-08-01] OMP is a safe custom Herdr Ask process backend
+
+**Context**: The managed Herdr Ask release is 0.1.0, which has no built-in OMP
+adapter. Waiting for a new Herdr Ask release would leave composed machines
+without the requested backend.
+
+**Decision**: Configure `omp` through Herdr Ask's existing custom-process
+contract. Requests use stdin; the fixed argv enables print mode and disables
+sessions, tools, LSP, PTY execution, extensions, skills, and rule discovery.
+The Herdr Ask system prompt remains explicit. `model = "auto"` leaves model
+selection to OMP unless the user supplies a concrete model.
+
+**Alternative considered**: Treat OMP as Pi's built-in adapter (rejected — that
+adapter invokes the `pi` executable and depends on Pi-specific flags and model
+discovery). A future first-class OMP adapter may replace this block after it is
+released across both Herdr Ask distribution channels.

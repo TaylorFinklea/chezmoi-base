@@ -47,3 +47,24 @@ timeout_seconds = 60
 # Model picker opens on this "scoped" subset (Tab toggles to the full list).
 # Glob patterns matched against discovered "provider/model" ids; edit to taste.
 model_scope = ["openai-codex/*"]
+
+[backends.omp]
+kind = "process"
+command = [
+  "omp",
+  "--print",
+  "--no-session",
+  "--no-tools",
+  "--no-lsp",
+  "--no-pty",
+  "--no-extensions",
+  "--no-skills",
+  "--no-rules",
+  "--system-prompt",
+  "{{system_prompt}}",
+  "--model",
+  "{{model}}",
+]
+prompt_transport = "stdin"
+model = "auto"
+timeout_seconds = 60
