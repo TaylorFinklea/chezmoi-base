@@ -25,5 +25,9 @@ export PATH="$HOME/.local/bin:$PATH"
 # Add go bin if it exists
 [ -d "$HOME/go/bin" ] && export PATH="$HOME/go/bin:$PATH"
 
+# Expose language servers that are only distributed through Mason. Append so
+# package-manager installations remain authoritative when both are present.
+[ -d "$HOME/.local/share/nvim/mason/bin" ] && export PATH="$PATH:$HOME/.local/share/nvim/mason/bin"
+
 # Profile-specific environment belongs to the active overlay.
 [ -f "$HOME/.zshenv.local" ] && source "$HOME/.zshenv.local"

@@ -32,8 +32,14 @@ return {
           },
         },
 
+        -- Nix (does not require the Nix package manager)
+        rnix = {},
+
         -- TypeScript/JavaScript
         ts_ls = {},
+
+        -- SQL
+        sqls = {},
       })
     end,
   },
