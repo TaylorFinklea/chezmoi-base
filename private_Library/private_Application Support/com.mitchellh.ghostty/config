@@ -18,6 +18,12 @@ keybind = cmd+d=new_split:right
 keybind = cmd+shift+d=new_split:down
 
 keybind = global:cmd+backquote=toggle_quick_terminal
+quick-terminal-position = top
+quick-terminal-size = 40%
+quick-terminal-screen = mouse
+quick-terminal-animation-duration = 0.15
+quick-terminal-autohide = true
+quick-terminal-space-behavior = move
 
 # Shift+Enter sends ESC+CR so Copilot CLI and Codex treat it as newline
 keybind = shift+enter=text:\x1b\x0d
