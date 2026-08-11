@@ -1,0 +1,52 @@
+TMUX CHEAT SHEET
+Prefix: C-a
+
+DAILY FLOW
+  C-a c   New window in the current directory
+  C-a w   Interactive window / tree chooser
+  C-a s   Session chooser
+  C-a -   Split below
+  C-a |   Split right
+  C-a z   Zoom / unzoom the current pane
+  C-a P   Popup shell in the current directory
+  C-a A   TmuxAI popup using the Codex profile
+  C-a G   TmuxAI popup using the Copilot profile
+  C-a r   Reload tmux config
+
+MOVE AROUND
+  C-a h   Move to the pane on the left
+  C-a j   Move to the pane below
+  C-a k   Move to the pane above
+  C-a l   Move to the pane on the right
+  Cmd-h   Previous window
+  Cmd-l   Next window
+  Cmd-Shift-h Move current window left
+  Cmd-Shift-l Move current window right
+  C-a C-a Send a literal Ctrl-a to the running application
+
+RESIZE PANES
+  C-a H   Resize left
+  C-a J   Resize down
+  C-a K   Resize up
+  C-a L   Resize right
+
+DISCOVERY / HELP
+  C-a Space  Which-key popup for the main actions
+  C-a /      This cheat sheet
+  C-a ?      Full tmux keybinding list
+
+COPY MODE
+  C-a [   Enter copy mode
+  v       Start selection
+  y       Copy selection and exit copy mode
+  /       Search in copy mode
+
+SESSION STATE
+  C-a S   Save tmux session state
+  C-a R   Restore tmux session state
+
+WORKFLOW NOTES
+  Prefer windows over deep pane grids.
+  Use panes for short-lived side-by-side work: editor + tests, shell + logs.
+  Use C-a P instead of creating a permanent extra pane for temporary commands.
+  If you get lost, use C-a Space or C-a w.

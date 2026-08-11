@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/alvinunreal/tmuxai/main/config.example.yaml
+
+debug: false
+yolo: false
+max_context_size: 100000
+max_capture_lines: 200
+wait_interval: 5
+
+tmux:
+  exec_split_args: ["-d", "-h"]
+
+default_model: "codex"
+
+models:
+  codex:
+    provider: "openai"
+    model: "gpt-5.4"
+    api_key: "${OPENAI_API_KEY}"
+
+  copilot:
+    provider: "github-copilot"
+    model: "claude-sonnet-4.6"
+
+exec_confirm: true
+send_keys_confirm: true
+paste_multiline_confirm: true
+
+whitelist_patterns:
+  - '^find(\s+.*)?$'
+  - '^pwd\s*$'
+  - '^cat(\s+.*)?$'
+
+blacklist_patterns:
+  - 'rm\s+'
+  - 'mv\s+'
+  - 'dd\s+'

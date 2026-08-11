@@ -102,3 +102,14 @@ selection to OMP unless the user supplies a concrete model.
 adapter invokes the `pi` executable and depends on Pi-specific flags and model
 discovery). A future first-class OMP adapter may replace this block after it is
 released across both Herdr Ask distribution channels.
+
+## [2026-08-10] Share tmux core through base and keep Moshi personal-only
+
+The complete tmux setup is now base-owned: the config, cheatsheet, which-key
+menu, TmuxAI config, and TPM plugin externals compose on both personal and
+work machines. The personal overlay retains `moshi-status.sh` and adds
+`tmux-local.conf`; the shared config sources that file only when present.
+
+This preserves one-target/one-owner composition while keeping Moshi hooks out
+of work environments. The public-safety allowlist explicitly admits the six
+public plugin repositories used by the base external manifest.

@@ -1,0 +1,134 @@
+# yaml-language-server: $schema=config.schema.yaml
+
+# This menu is intentionally small. It highlights the shortcuts used in this
+# repo's tmux config instead of trying to expose every tmux command.
+command_alias_start_index: 200
+
+keybindings:
+  prefix_table: Space
+
+title:
+  style: align=centre,bold
+  prefix: tmux
+  prefix_style: fg=#89b4fa,align=centre,bold
+
+position:
+  x: R
+  y: P
+
+macros:
+  - name: reload-config
+    commands:
+      - source-file "$HOME/.tmux.conf"
+      - display "tmux config reloaded"
+
+items:
+  - name: New window
+    key: c
+    command: "new-window -c #{pane_current_path}"
+  - name: Tree chooser
+    key: w
+    command: choose-tree -Zw
+  - name: Session chooser
+    key: s
+    command: choose-tree -Zs
+  - name: Popup shell
+    key: P
+    command: "display-popup -w 90% -h 85% -d #{pane_current_path}"
+  - name: +AI
+    key: a
+    menu:
+      - name: Codex
+        key: c
+        command: "display-popup -w 90% -h 85% -d #{pane_current_path} -E \"/bin/zsh -lic 'tmuxai --model codex'\""
+      - name: Copilot
+        key: g
+        command: "display-popup -w 90% -h 85% -d #{pane_current_path} -E \"/bin/zsh -lic 'tmuxai --model copilot'\""
+      - name: Default model
+        key: d
+        command: "display-popup -w 90% -h 85% -d #{pane_current_path} -E \"/bin/zsh -lic 'tmuxai'\""
+  - name: Cheat sheet
+    key: /
+    command: 'display-popup -w 70% -h 80% -E "less -R ~/.config/tmux/cheatsheet.txt"'
+  - separator: true
+  - name: Split below
+    key: "-"
+    command: "split-window -v -c #{pane_current_path}"
+  - name: Split right
+    key: "|"
+    command: "split-window -h -c #{pane_current_path}"
+  - name: Zoom pane
+    key: z
+    command: resize-pane -Z
+  - separator: true
+  - name: +Move pane
+    key: p
+    menu:
+      - name: Left
+        key: h
+        command: select-pane -L
+        transient: true
+      - name: Down
+        key: j
+        command: select-pane -D
+        transient: true
+      - name: Up
+        key: k
+        command: select-pane -U
+        transient: true
+      - name: Right
+        key: l
+        command: select-pane -R
+        transient: true
+  - name: +Resize pane
+    key: r
+    menu:
+      - name: Left
+        key: H
+        command: resize-pane -L 5
+        transient: true
+      - name: Down
+        key: J
+        command: resize-pane -D 5
+        transient: true
+      - name: Up
+        key: K
+        command: resize-pane -U 5
+        transient: true
+      - name: Right
+        key: L
+        command: resize-pane -R 5
+        transient: true
+  - separator: true
+  - name: Copy mode
+    key: "["
+    command: copy-mode
+  - name: Help popup
+    key: "?"
+    command: 'display-popup -w 90% -h 85% -E "tmux list-keys | less -R"'
+  - name: Reload config
+    key: R
+    macro: reload-config
+  - separator: true
+  - name: +State
+    key: S
+    menu:
+      - name: Save session
+        key: s
+        command: run-shell "$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
+      - name: Restore session
+        key: r
+        command: run-shell "$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh"
+  - separator: true
+  - name: +Plugins
+    key: I
+    menu:
+      - name: Install
+        key: I
+        command: run-shell "$TMUX_PLUGIN_MANAGER_PATH/tpm/bin/install_plugins"
+      - name: Update
+        key: U
+        command: run-shell "$TMUX_PLUGIN_MANAGER_PATH/tpm/bin/update_plugins all"
+      - name: Clean
+        key: C
+        command: run-shell "$TMUX_PLUGIN_MANAGER_PATH/tpm/bin/clean_plugins"

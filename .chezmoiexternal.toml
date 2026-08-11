@@ -1,0 +1,41 @@
+[".tmux/plugins/tpm"]
+type = "git-repo"
+url = "https://github.com/tmux-plugins/tpm.git"
+refreshPeriod = "168h"
+clone.args = ["--depth", "1"]
+pull.args = ["--ff-only"]
+
+[".tmux/plugins/tmux-sensible"]
+type = "git-repo"
+url = "https://github.com/tmux-plugins/tmux-sensible.git"
+refreshPeriod = "168h"
+clone.args = ["--depth", "1"]
+pull.args = ["--ff-only"]
+
+[".tmux/plugins/tmux-which-key"]
+type = "git-repo"
+url = "https://github.com/alexwforsythe/tmux-which-key.git"
+refreshPeriod = "168h"
+clone.args = ["--depth", "1"]
+pull.args = ["--ff-only"]
+
+[".tmux/plugins/vim-tmux-navigator"]
+type = "git-repo"
+url = "https://github.com/christoomey/vim-tmux-navigator.git"
+refreshPeriod = "168h"
+clone.args = ["--depth", "1"]
+pull.args = ["--ff-only"]
+
+[".tmux/plugins/tmux-resurrect"]
+type = "git-repo"
+url = "https://github.com/tmux-plugins/tmux-resurrect.git"
+refreshPeriod = "168h"
+clone.args = ["--depth", "1"]
+pull.args = ["--ff-only"]
+
+[".tmux/plugins/tmux-continuum"]
+type = "git-repo"
+url = "https://github.com/tmux-plugins/tmux-continuum.git"
+refreshPeriod = "168h"
+clone.args = ["--depth", "1"]
+pull.args = ["--ff-only"]

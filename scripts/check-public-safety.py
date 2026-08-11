@@ -44,6 +44,12 @@ ALLOWED_DOCUMENTATION_GIT_REMOTES = frozenset(
         b"https://github.com/koalaman/shellcheck-precommit",
         b"https://github.com/pointfreeco/swift-concurrency-extras.git",
         b"https://github.com/rhysd/actionlint",
+        b"https://github.com/alexwforsythe/tmux-which-key.git",
+        b"https://github.com/christoomey/vim-tmux-navigator.git",
+        b"https://github.com/tmux-plugins/tmux-continuum.git",
+        b"https://github.com/tmux-plugins/tmux-resurrect.git",
+        b"https://github.com/tmux-plugins/tmux-sensible.git",
+        b"https://github.com/tmux-plugins/tpm.git",
         b"https://github.com/zizmorcore/zizmor-pre-commit",
     }
 )
