@@ -427,7 +427,7 @@ apply_targets_cmd() {
   if [ "$failed" -eq 0 ] && [ "${#overlay_batch[@]}" -gt 0 ]; then
     run_chezmoi "${sources[1]}" apply --force --parent-dirs -- "${overlay_batch[@]}" || failed=$?
   fi
-  if [ "$failed" -eq 0 ]; then
+  if [ "$failed" -eq 0 ] && [ "${#remove_batch[@]}" -gt 0 ]; then
     for target in "${remove_batch[@]}"; do
       rm -rf -- "$target" || failed=$?
       [ "$failed" -eq 0 ] || break

@@ -440,6 +440,16 @@ fi
 : > "$call_log"
 base_target="$tmp/destination/base-target/shared"
 overlay_target="$tmp/destination/overlay-target/personal"
+overlay_only_stderr="$tmp/overlay-only-apply.stderr"
+if ! run_compose apply personal "$overlay_target" > /dev/null 2> "$overlay_only_stderr"; then
+  fail 'overlay-only targeted apply should succeed without removal entries'
+fi
+if grep -Fq 'unbound variable' "$overlay_only_stderr"; then
+  fail 'overlay-only targeted apply should not diagnose an empty removal batch'
+fi
+if find "$tmp/state" -type d -name 'chezmoi-apply.*' -print -quit | grep -q .; then
+  fail 'successful targeted apply should remove its transaction directory'
+fi
 mkdir -p "${overlay_target%/*}"
 printf 'premodified overlay\n' > "$overlay_target"
 if ! run_compose apply personal "$base_target" "$overlay_target"; then
@@ -480,6 +490,14 @@ chmod 640 "$removed_target/content"
 if CHEZMOI_FAIL_TARGET="$overlay_target" run_compose apply personal \
   "$base_target" "$overlay_target" "$removed_target" > /dev/null 2>&1; then
   fail 'targeted apply should surface an overlay batch failure'
+else
+  targeted_apply_status=$?
+fi
+if [ "$targeted_apply_status" -ne 72 ]; then
+  fail "targeted apply failure should propagate exit 72, got $targeted_apply_status"
+fi
+if find "$tmp/state" -type d -name 'chezmoi-apply.*' -print -quit | grep -q .; then
+  fail 'failed targeted apply should remove its transaction directory after rollback'
 fi
 if [ "$(cat "$base_target")" != base-before ] ||
    [ "$(cat "$overlay_target")" != overlay-before ] ||
