@@ -15,7 +15,7 @@ def _check(ss, base, overlay, profile, tmp_path, extra=()):
 def _lock(ss, base, overlay, profile, tmp_path, extra=()):
     return ss.main([
         "lock", "--profile", profile, "--base-root", str(base), "--overlay-root", str(overlay),
-        "--home", str(tmp_path / "home"), *extra,
+        "--home", str(tmp_path / "home"), "--all", *extra,
     ])
 
 

@@ -16,17 +16,17 @@ def _fresh(tmp_path, suffix=""):
 
 def test_lock_zero_clean_two_invalid(ss, tmp_path):
     base, personal = _fresh(tmp_path, "1")
-    assert ss.main(_argv("lock", base, personal, tmp_path / "1")) == 0
+    assert ss.main(_argv("lock", base, personal, tmp_path / "1", extra=["--all"])) == 0
     dup_base, _dup_personal = _fresh(tmp_path, "2")
     from .conftest import build_repo
     dup2 = build_repo(tmp_path / "dup2", owner="personal-managed", roles=["personal"], skill_names=["alpha"],
                        targets=["native"])
-    assert ss.main(_argv("lock", dup_base, dup2, tmp_path / "2")) == 2
+    assert ss.main(_argv("lock", dup_base, dup2, tmp_path / "2", extra=["--all"])) == 2
 
 
 def test_check_zero_one_two(ss, tmp_path):
     base, personal = _fresh(tmp_path, "1")
-    assert ss.main(_argv("lock", base, personal, tmp_path / "1")) == 0
+    assert ss.main(_argv("lock", base, personal, tmp_path / "1", extra=["--all"])) == 0
     assert ss.main(_argv("check", base, personal, tmp_path / "1")) == 0  # 0 clean
 
     skill_md = base / ".skills-src" / "skills" / "alpha" / "SKILL.md"

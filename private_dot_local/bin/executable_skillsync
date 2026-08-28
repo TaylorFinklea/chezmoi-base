@@ -15,10 +15,10 @@ Model (see the skill-ownership-context-reduction phase spec):
   hard failure. A personal-profile run never opens, stats, or reads the work
   catalog or work source — the work-only code path is gated by
   `--profile work` (and, for source-touching validation, `--require-sources`).
-- `skillsync lock` records a per-Skill SHA-256 tree hash + provenance into
-  `.skillcatalog.lock.json`; `skillsync check` fails when the tree drifts from
-  the lock. Humans edit TOML/source and rerun `lock`; the lock JSON is never
-  hand-edited.
+- `skillsync lock --skill NAME` records one Skill's SHA-256 tree hash and
+  provenance without rewriting unrelated entries or the other repository's
+  lock. `lock --all` is the explicit broad refresh. `skillsync check` fails
+  when a tree drifts from the lock; lock JSON is never hand-edited.
 - `skillsync sync` projects catalog Skills into the physical target roots
   (`native` -> ~/.claude/skills, `codex` -> ~/.codex/skills, `pi` ->
   ~/.pi/agent/skills, `hermes` -> ~/.hermes/skills, personal only) via
@@ -622,6 +622,32 @@ def build_lock(catalog: Catalog) -> dict:
         "owner": catalog.owner,
         "skills": {r.name: compute_lock_entry(catalog, r, commit_hash=commit_hash) for r in catalog.skills},
     }
+
+
+def update_lock_entry(catalog: Catalog, record: SkillRecord, lock_path: Path) -> dict:
+    try:
+        lock = load_lock(lock_path)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SkillError(f"cannot read existing lock {lock_path}: {exc}") from exc
+    if lock is None:
+        raise SkillError(f"targeted lock requires existing {lock_path}; run lock --all first")
+    if not isinstance(lock, dict):
+        raise SkillError(f"targeted lock must contain a JSON object in {lock_path}; run lock --all")
+    if lock.get("schema") != catalog.schema or lock.get("owner") != catalog.owner:
+        raise SkillError(f"targeted lock metadata does not match catalog for {catalog.owner}; run lock --all")
+    skills = lock.get("skills")
+    if not isinstance(skills, dict):
+        raise SkillError(f"targeted lock has invalid skills map in {lock_path}; run lock --all")
+    malformed = next((name for name, entry in skills.items() if not isinstance(entry, dict)), None)
+    if malformed is not None:
+        raise SkillError(f"targeted lock has invalid entry {malformed!r} in {lock_path}; run lock --all")
+
+    commit_hash = None if catalog.external_source else git_commit_hash(catalog.catalog_path.parent)
+    updated = dict(lock)
+    updated_skills = dict(skills)
+    updated_skills[record.name] = compute_lock_entry(catalog, record, commit_hash=commit_hash)
+    updated["skills"] = updated_skills
+    return updated
 
 
 def load_lock(lock_path: Path) -> Optional[dict]:
@@ -1319,12 +1345,23 @@ def cmd_lock(args: argparse.Namespace) -> int:
     base, overlay = load_profile_catalogs(
         args.profile, args.base_root, args.overlay_root, work_root=args.work_root, require_sources=True
     )
-    compose_profile(args.profile, base, overlay)  # raises on cross-owner name collisions
-    base_lock = build_lock(base)
-    overlay_lock = build_lock(overlay)
-    atomic_write_json(Path(args.base_root) / LOCK_FILENAME, base_lock)
-    atomic_write_json(Path(args.overlay_root) / LOCK_FILENAME, overlay_lock)
-    print(f"skillsync: locked {len(base.skills)} base skill(s), {len(overlay.skills)} overlay skill(s)")
+    composed = compose_profile(args.profile, base, overlay)  # raises on cross-owner name collisions
+    if args.lock_all:
+        base_lock = build_lock(base)
+        overlay_lock = build_lock(overlay)
+        atomic_write_json(Path(args.base_root) / LOCK_FILENAME, base_lock)
+        atomic_write_json(Path(args.overlay_root) / LOCK_FILENAME, overlay_lock)
+        print(f"skillsync: locked {len(base.skills)} base skill(s), {len(overlay.skills)} overlay skill(s)")
+        return 0
+
+    selected = composed.skills.get(args.skill)
+    if selected is None:
+        raise SkillError(f"unknown composed skill {args.skill!r}")
+    catalog, record = selected
+    lock_path = catalog.catalog_path.parent / LOCK_FILENAME
+    updated_lock = update_lock_entry(catalog, record, lock_path)
+    atomic_write_json(lock_path, updated_lock)
+    print(f"skillsync: locked {catalog.owner}/{record.name}")
     return 0
 
 
@@ -1565,6 +1602,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         sp.add_argument("--target-root", action="append", default=[], metavar="NAME=PATH")
         if name == "check":
             sp.add_argument("--require-sources", action="store_true")
+        if name == "lock":
+            scope = sp.add_mutually_exclusive_group(required=True)
+            scope.add_argument("--skill", metavar="NAME")
+            scope.add_argument("--all", dest="lock_all", action="store_true")
         if name == "audit":
             sp.add_argument("--format", choices=("json", "markdown"), default="json")
             sp.add_argument("--strict-runtime", action="store_true")
