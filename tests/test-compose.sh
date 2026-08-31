@@ -22,6 +22,7 @@ run_compose() {
   export CHEZMOI_BASE_SOURCE="$tmp/base"
   export CHEZMOI_PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE_OVERRIDE:-$tmp/personal}"
   export CHEZMOI_WORK_SOURCE="$tmp/work"
+  export WORK_SKILLS_SOURCE="${WORK_SKILLS_SOURCE_OVERRIDE:-$tmp/work-skills}"
   export CHEZMOI_CONFIG_ROOT="$tmp/config"
   export CHEZMOI_STATE_ROOT="$tmp/state"
   export CHEZMOI_DESTINATION="$tmp/destination"
@@ -36,6 +37,7 @@ run_compose_tty_choice() {
   export CHEZMOI_BASE_SOURCE="$tmp/base"
   export CHEZMOI_PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE_OVERRIDE:-$tmp/personal}"
   export CHEZMOI_WORK_SOURCE="$tmp/work"
+  export WORK_SKILLS_SOURCE="${WORK_SKILLS_SOURCE_OVERRIDE:-$tmp/work-skills}"
   export CHEZMOI_CONFIG_ROOT="$tmp/config"
   export CHEZMOI_STATE_ROOT="$tmp/state"
   export CHEZMOI_DESTINATION="$tmp/destination"
@@ -69,7 +71,7 @@ assert_read_only_execution() {
   local skill_work expected_skill_check expected_skill_diff
 
   case "$role" in
-    work) skill_work=$tmp/work ;;
+    work) skill_work=$tmp/work-skills ;;
     *) skill_work= ;;
   esac
   expected_skill_check="skillsync:check:origin=source:profile=$role:base=$tmp/base:overlay=$overlay:work=$skill_work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0"
@@ -100,7 +102,8 @@ assert_read_only_execution() {
   fi
 }
 
-mkdir -p "$tmp/base/private_dot_local/bin" "$tmp/base" "$tmp/personal" "$tmp/work" "$tmp/config" "$fake_bin"
+mkdir -p "$tmp/base/private_dot_local/bin" "$tmp/base" "$tmp/personal" "$tmp/work" \
+  "$tmp/work-skills/scripts" "$tmp/config" "$fake_bin"
 : > "$tmp/config/base.toml"
 : > "$tmp/config/personal.toml"
 : > "$tmp/config/work.toml"
@@ -312,9 +315,6 @@ if [ -z "$command" ] || [ -z "$profile" ] || [ -z "$base" ] || [ -z "$overlay" ]
   printf 'invalid skillsync invocation\n' >&2
   exit 70
 fi
-if [ "$command" = check ] && [ "$profile" = work ] && [ "${FAKE_SKILLSYNC_WORK_SOURCE_MISSING:-0}" = 1 ]; then
-  exit 66
-fi
 printf 'skillsync:%s:origin=%s:profile=%s:base=%s:overlay=%s:work=%s:home=%s:state=%s:require=%s:non-interactive=%s\n' \
   "$command" "$origin" "$profile" "$base" "$overlay" "$work" "$home" "$state" "$require" "$non_interactive" >> "$CHEZMOI_CALL_LOG"
 case "$command" in
@@ -340,6 +340,24 @@ set -euo pipefail
 SKILLSYNC_ORIGIN=source exec skillsync "$@"
 EOF
 chmod +x "$tmp/base/private_dot_local/bin/executable_skillsync"
+
+cat > "$tmp/work-skills/scripts/work-skills" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 3 ] || [ "$1" != --home ]; then
+  printf 'invalid work-skills invocation\n' >&2
+  exit 70
+fi
+home=$2
+command=$3
+printf 'work-skills:%s:home=%s\n' "$command" "$home" >> "$CHEZMOI_CALL_LOG"
+case "$command" in
+  sync) exit "${FAKE_WORK_SKILLS_SYNC_STATUS:-0}" ;;
+  *) printf 'unexpected work-skills command: %s\n' "$command" >&2; exit 70 ;;
+esac
+EOF
+chmod +x "$tmp/work-skills/scripts/work-skills"
 
 if ! run_compose preflight personal; then
   fail 'preflight personal should succeed for distinct base and personal targets'
@@ -507,7 +525,7 @@ if [ "$unmanaged_status" -ne 65 ]; then
 fi
 
 # --- sync pull stage ---
-mkdir -p "$tmp/base/.git" "$tmp/personal/.git" "$tmp/work/.git"
+mkdir -p "$tmp/base/.git" "$tmp/personal/.git" "$tmp/work/.git" "$tmp/work-skills/.git"
 : > "$call_log"
 if ! run_compose sync personal; then
   fail 'sync should succeed on clean state'
@@ -520,6 +538,14 @@ if ! grep -Fqx "git-pull:$tmp/personal" "$call_log"; then
 fi
 if ! head -1 "$call_log" | grep -q '^git-'; then
   fail 'sync should pull before any chezmoi call'
+fi
+
+: > "$call_log"
+if ! run_compose sync work; then
+  fail 'work sync should succeed on clean state'
+fi
+if ! grep -Fqx "git-pull:$tmp/work-skills" "$call_log"; then
+  fail 'work sync should ff-only pull the canonical work-skills repo'
 fi
 
 : > "$call_log"
@@ -661,7 +687,7 @@ fi
 if ! run_compose preflight work; then
   fail 'work preflight should validate the catalog without requiring skill sources'
 fi
-if ! grep -Fqx "skillsync:check:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
+if ! grep -Fqx "skillsync:check:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work-skills:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=0" "$call_log"; then
   fail 'work preflight should check the work catalog without --require-sources'
 fi
 
@@ -669,7 +695,7 @@ fi
 if ! run_compose preflight work --require-sources; then
   fail 'work preflight should support explicit skill-source validation'
 fi
-if ! grep -Fqx "skillsync:check:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0" "$call_log"; then
+if ! grep -Fqx "skillsync:check:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work-skills:home=$tmp/destination:state=$tmp/state/skillsync:require=1:non-interactive=0" "$call_log"; then
   fail 'explicit work preflight should require skill sources'
 fi
 
@@ -733,6 +759,26 @@ if grep -q '^apply-' "$call_log"; then
   fail 'clean sync must not issue a bare chezmoi apply'
 fi
 
+: > "$call_log"
+if ! run_compose sync work --no-pull; then
+  fail 'clean work sync should reconcile the canonical work-skills package'
+fi
+work_skills_line=$(line_of "work-skills:sync:home=$tmp/destination")
+skillsync_work_line=$(line_of "skillsync:sync:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work-skills:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=1")
+if [ -z "$work_skills_line" ] || [ -z "$skillsync_work_line" ] || [ "$skillsync_work_line" -ge "$work_skills_line" ]; then
+  fail 'work sync should run work-skills after the base skillsync projection'
+fi
+
+: > "$call_log"
+if FAKE_WORK_SKILLS_SYNC_STATUS=19 run_compose sync work --no-pull > /dev/null 2>&1; then
+  fail 'a failed work-skills reconciliation should fail work sync'
+else
+  work_skills_status=$?
+fi
+if [ "$work_skills_status" -ne 19 ]; then
+  fail "work-skills failure should propagate exit 19, got $work_skills_status"
+fi
+
 printf ' M blocked/by-check\n' > "$tmp/personal/fake-status.txt"
 : > "$call_log"
 if FAKE_SKILLSYNC_CHECK_STATUS=23 run_compose sync personal --no-pull > /dev/null 2>&1; then
@@ -748,9 +794,8 @@ if grep -Eq '^(status:|apply-|skillsync:sync:)' "$call_log"; then
 fi
 rm "$tmp/personal/fake-status.txt"
 
-printf ' M blocked/missing-work-source\n' > "$tmp/work/fake-status.txt"
 : > "$call_log"
-if FAKE_SKILLSYNC_WORK_SOURCE_MISSING=1 run_compose sync work --no-pull > /dev/null 2>&1; then
+if WORK_SKILLS_SOURCE_OVERRIDE="$tmp/missing-work-skills" run_compose sync work --no-pull > /dev/null 2>&1; then
   fail 'missing external work skill source should fail work sync'
 else
   missing_work_status=$?
@@ -758,10 +803,9 @@ fi
 if [ "$missing_work_status" -ne 66 ]; then
   fail "missing work skill source should exit 66, got $missing_work_status"
 fi
-if grep -Eq '^(status:|apply-|skillsync:sync:)' "$call_log"; then
+if grep -Eq '^(managed:|status:|apply-|skillsync:|work-skills:)' "$call_log"; then
   fail 'missing work skill source must abort before chezmoi applies anything'
 fi
-rm "$tmp/work/fake-status.txt"
 
 printf ' M blocked/apply-failure\n' > "$tmp/personal/fake-status.txt"
 : > "$call_log"
