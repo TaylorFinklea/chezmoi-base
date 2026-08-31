@@ -114,7 +114,8 @@ require_work_skills_source() {
 }
 
 run_work_skills() {
-  "$WORK_SKILLS_SOURCE/scripts/work-skills" --home "$DESTINATION" "$@"
+  CHEZMOI_AI_PROFILE=work \
+    "$WORK_SKILLS_SOURCE/scripts/work-skills" --home "$DESTINATION" "$@"
 }
 
 managed_lists_dir=
@@ -340,7 +341,7 @@ print_summary() {
 }
 
 sync_run() {
-  local source skillsync_status work_skills_status pending_status
+  local source skillsync_status work_skills_check_status work_skills_status pending_status
   pending_status=0
 
   if [ "$role" = work ]; then
@@ -353,6 +354,13 @@ sync_run() {
     done
     if [ "$role" = work ]; then
       pull_repo "$WORK_SKILLS_SOURCE"
+    fi
+  fi
+  if [ "$role" = work ]; then
+    work_skills_check_status=0
+    run_work_skills check-source || work_skills_check_status=$?
+    if [ "$work_skills_check_status" -ne 0 ]; then
+      return "$work_skills_check_status"
     fi
   fi
   preflight --require-sources

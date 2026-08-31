@@ -352,7 +352,12 @@ fi
 home=$2
 command=$3
 printf 'work-skills:%s:home=%s\n' "$command" "$home" >> "$CHEZMOI_CALL_LOG"
+if [ "${CHEZMOI_AI_PROFILE:-}" != work ]; then
+  printf 'work-skills: missing work profile\n' >&2
+  exit 68
+fi
 case "$command" in
+  check-source) exit "${FAKE_WORK_SKILLS_CHECK_STATUS:-0}" ;;
   sync) exit "${FAKE_WORK_SKILLS_SYNC_STATUS:-0}" ;;
   *) printf 'unexpected work-skills command: %s\n' "$command" >&2; exit 70 ;;
 esac
@@ -763,10 +768,28 @@ fi
 if ! run_compose sync work --no-pull; then
   fail 'clean work sync should reconcile the canonical work-skills package'
 fi
+work_skills_check_line=$(line_of "work-skills:check-source:home=$tmp/destination")
+managed_work_line=$(line_of "managed:$tmp/base")
 work_skills_line=$(line_of "work-skills:sync:home=$tmp/destination")
 skillsync_work_line=$(line_of "skillsync:sync:origin=source:profile=work:base=$tmp/base:overlay=$tmp/work:work=$tmp/work-skills:home=$tmp/destination:state=$tmp/state/skillsync:require=0:non-interactive=1")
+if [ -z "$work_skills_check_line" ] || [ -z "$managed_work_line" ] || [ "$work_skills_check_line" -ge "$managed_work_line" ]; then
+  fail 'work sync should validate work-skills before inspecting or changing HOME'
+fi
 if [ -z "$work_skills_line" ] || [ -z "$skillsync_work_line" ] || [ "$skillsync_work_line" -ge "$work_skills_line" ]; then
   fail 'work sync should run work-skills after the base skillsync projection'
+fi
+
+: > "$call_log"
+if FAKE_WORK_SKILLS_CHECK_STATUS=21 run_compose sync work --no-pull > /dev/null 2>&1; then
+  fail 'a failed work-skills source check should fail work sync'
+else
+  work_skills_check_status=$?
+fi
+if [ "$work_skills_check_status" -ne 21 ]; then
+  fail "work-skills source-check failure should propagate exit 21, got $work_skills_check_status"
+fi
+if grep -Eq '^(managed:|status:|apply-|skillsync:|work-skills:sync:)' "$call_log"; then
+  fail 'a failed work-skills source check must abort before inspecting or changing HOME'
 fi
 
 : > "$call_log"
