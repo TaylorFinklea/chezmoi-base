@@ -552,6 +552,13 @@ fi
 if ! grep -Fqx "git-pull:$tmp/work-skills" "$call_log"; then
   fail 'work sync should ff-only pull the canonical work-skills repo'
 fi
+work_skills_pull_line=$(grep -n -m 1 -Fx "git-pull:$tmp/work-skills" "$call_log" | cut -d: -f1)
+work_skills_check_line=$(grep -n -m 1 -Fx "work-skills:check-source:home=$tmp/destination" "$call_log" | cut -d: -f1)
+work_managed_line=$(grep -n -m 1 -Fx "managed:$tmp/base" "$call_log" | cut -d: -f1)
+if [ -z "$work_skills_pull_line" ] || [ -z "$work_skills_check_line" ] || [ -z "$work_managed_line" ] || \
+   [ "$work_skills_pull_line" -ge "$work_skills_check_line" ] || [ "$work_skills_check_line" -ge "$work_managed_line" ]; then
+  fail 'work sync must pull work-skills, validate the pulled source, then inspect HOME'
+fi
 
 : > "$call_log"
 if ! run_compose sync personal --no-pull; then
