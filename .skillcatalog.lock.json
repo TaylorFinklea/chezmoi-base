@@ -67,45 +67,6 @@
       "transform": "standard",
       "tree_hash": "sha256:038746e4ed1c8476d432546c57acf6093a68f08b4b401ddf1ec23ff1758b5888"
     },
-    "delegate": {
-      "description": "Use when orchestrating multi-step work as a Lead-tier session \u2014 dispatching to cheaper models, distributing load, or picking adversarial reviewers \u2014 or when the user says delegate/distribute/dispatch/review with another model. Loads the delegation posture, panel criteria, and model-family map. Not for native Undertake plan/review, Guildhall, or Ralph sessions.",
-      "name": "delegate",
-      "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
-      "targets": [
-        "native",
-        "codex",
-        "pi"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:25cb261ad53755ce19ba35ce08fc53459a9c503888542f1e297dcba1eed30f97"
-    },
-    "dispatch-worker": {
-      "description": "Use after delegate selects an approved worker profile, when executing one bounded task while the current session remains orchestrator. Chooses native subagents, OMP, Pi compatibility, or schema-validated orchestra execution. Not for Guildhall/Undertake fleet sessions or Ralph loops.",
-      "name": "dispatch-worker",
-      "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
-      "targets": [
-        "native",
-        "codex",
-        "pi"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:cf4cce9df11a66d7c484e3a193250cdbb25b3adeeffe32f5d8f7847d467e5e70"
-    },
-    "fallback-orchestration": {
-      "description": "Use when running multi-agent or schema-validated orchestration on non-Opus models \u2014 especially when Anthropic/Opus is rate-limited \u2014 via the direct opencode-go provider (Kimi K2.7 Code, MiniMax M3) and the local `orchestra` driver. Covers the deterministic agentWithSchema/parallel/Budget primitives, per-harness invocation (Claude Code, Pi, OpenCode, Codex), and the hard-won gotchas (stdin/TTY hang, <think>-strip for MiniMax, opencode-go is a direct provider).",
-      "name": "fallback-orchestration",
-      "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
-      "targets": [
-        "native",
-        "codex",
-        "pi"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:66fb2a936f7ca5e11063e9d1588a716dce14f8683a96f91ae873f099620fe1d6"
-    },
     "fastapi-python": {
       "description": "Expert in FastAPI Python development with best practices for APIs and async operations",
       "name": "fastapi-python",
@@ -145,30 +106,6 @@
       "transform": "standard",
       "tree_hash": "sha256:e5ee3c4e0f9d45eafda040b518bb0a9106d1c4d7de262a0e0e78a062e6c38c24"
     },
-    "guildhall-orchestration": {
-      "description": "Use when starting, resuming, or supervising Undertake loops or compatibility cycles, Musterroll roster/availability routing, Afterfact scorecard evidence, provider fallback, or cross-harness queue dispatch.",
-      "name": "guildhall-orchestration",
-      "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
-      "targets": [
-        "native",
-        "codex",
-        "pi"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:fbe76f6f58e6179e3991a1feb75e643209546dd9720edcf1e614766516f27913"
-    },
-    "handoff-prompt": {
-      "description": "Generate a self-contained prompt to hand off backlog work to another AI agent (cheaper model, different harness, or web UI). Reads roadmap state, picks items, and produces a copy-pasteable prompt with all context inline.",
-      "name": "handoff-prompt",
-      "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
-      "targets": [
-        "native"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:72401b77035727a96fa1cea6314f8661eec22d457e3ebae041291c2d4b31cc78"
-    },
     "harness-deck": {
       "description": "Use to publish a harness-deck/hdeck report \u2014 summarize major work (feature/refactor/audit/investigation) or a multi-session roadmap as a durable dashboard record, or pose an interactive ask/decision/approval question too rich for a native inline picker: a mock-up to react to, a paragraph per option, more explanation than option labels hold, or an answer that must survive a context clear. Reports can render arbitrary HTML/CSS/SVG via the `html` block, so reach for harness-deck when you want a custom layout, rendered mock-up, or inline visual that plain markdown can't express. NOT for short, self-explanatory select/multi-select choices \u2014 those belong in the harness's native inline picker, not a report.",
       "name": "harness-deck",
@@ -194,17 +131,6 @@
       ],
       "transform": "standard",
       "tree_hash": "sha256:1532bfe57fe6b69cb1e9c7cdc792ae293483d0e9178779b20691d1f366b1c23d"
-    },
-    "loops": {
-      "description": "Use when running direct Ralph phase loops over one repo's `.docs/ai/current-state.md` Plan and deciding where that simple loop runs. Not for Guildhall/Undertake native plan/review jobs, cycle dispatch, beads fleet orchestration, or provider fallback.",
-      "name": "loops",
-      "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
-      "targets": [
-        "native"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:d6a57405d1bd687b966ab0793436821bbf4dd82526322b848cadeae3d5c3ad21"
     },
     "modern-python": {
       "description": "Configures Python projects with modern tooling (uv, ruff, ty). Use when creating projects, writing standalone scripts, or migrating from pip/Poetry/mypy/black.",

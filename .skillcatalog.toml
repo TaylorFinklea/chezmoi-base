@@ -40,27 +40,6 @@ upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
-name = "delegate"
-targets = ["native", "codex", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
-name = "dispatch-worker"
-targets = ["native", "codex", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
-name = "fallback-orchestration"
-targets = ["native", "codex", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
 name = "fastapi-python"
 targets = ["native", "codex", "pi"]
 activation = "automatic"
@@ -82,20 +61,6 @@ upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
-name = "guildhall-orchestration"
-targets = ["native", "codex", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
-name = "handoff-prompt"
-targets = ["native"]
-activation = "explicit"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
 name = "harness-deck"
 targets = ["native", "codex", "pi"]
 activation = "automatic"
@@ -105,13 +70,6 @@ transform = "standard"
 [[skills]]
 name = "insecure-defaults"
 targets = ["native", "codex", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
-name = "loops"
-targets = ["native"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
