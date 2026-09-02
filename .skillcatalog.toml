@@ -5,14 +5,14 @@ source_root = ".skills-src/skills"
 
 [[skills]]
 name = "agentic-actions-auditor"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
 name = "ask-questions-if-underspecified"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
@@ -41,14 +41,14 @@ transform = "standard"
 
 [[skills]]
 name = "fastapi-python"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
 name = "find-skills"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
@@ -62,14 +62,14 @@ transform = "standard"
 
 [[skills]]
 name = "harness-deck"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
 name = "insecure-defaults"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
@@ -90,21 +90,21 @@ transform = "standard"
 
 [[skills]]
 name = "rust-async-patterns"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
 name = "rust-best-practices"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
 name = "shadcn-ui"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
@@ -132,14 +132,14 @@ transform = "standard"
 
 [[skills]]
 name = "swiftui-expert-skill"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
 name = "swiftui-pro"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
