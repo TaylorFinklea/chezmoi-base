@@ -6,10 +6,9 @@
       "description": "Audits GitHub Actions workflows for security vulnerabilities in AI agent integrations including Claude Code Action, OpenAI Codex, and GitHub AI Inference. Detects attack vectors where attacker-controlled input reaches AI agents running in CI/CD pipelines, including env var intermediary patterns, direct expression injection, dangerous sandbox configurations, and wildcard user allowlists. Use when reviewing workflow files that invoke AI coding agents, auditing CI/CD pipeline security for prompt injection risks, or evaluating agentic action configurations.",
       "name": "agentic-actions-auditor",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -19,10 +18,9 @@
       "description": "Clarify requirements before implementing. Use when serious doubts arise.",
       "name": "ask-questions-if-underspecified",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -71,10 +69,9 @@
       "description": "Expert in FastAPI Python development with best practices for APIs and async operations",
       "name": "fastapi-python",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -84,10 +81,9 @@
       "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
       "name": "find-skills",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -110,10 +106,9 @@
       "description": "Use to publish a harness-deck/hdeck report \u2014 summarize major work (feature/refactor/audit/investigation) or a multi-session roadmap as a durable dashboard record, or pose an interactive ask/decision/approval question too rich for a native inline picker: a mock-up to react to, a paragraph per option, more explanation than option labels hold, or an answer that must survive a context clear. Reports can render arbitrary HTML/CSS/SVG via the `html` block, so reach for harness-deck when you want a custom layout, rendered mock-up, or inline visual that plain markdown can't express. NOT for short, self-explanatory select/multi-select choices \u2014 those belong in the harness's native inline picker, not a report.",
       "name": "harness-deck",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -123,10 +118,9 @@
       "description": "Detects fail-open insecure defaults (hardcoded secrets, weak auth, permissive security) that allow apps to run insecurely in production. Use when auditing security, reviewing config management, or analyzing environment variable handling.",
       "name": "insecure-defaults",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -160,10 +154,9 @@
       "description": "Master Rust async programming with Tokio, async traits, error handling, and concurrent patterns. Use when building async Rust applications, implementing concurrent systems, or debugging async code.",
       "name": "rust-async-patterns",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -173,10 +166,9 @@
       "description": "Guide for writing idiomatic Rust code based on Apollo GraphQL's best practices handbook. Use this skill when: (1) writing new Rust code or functions, (2) reviewing or refactoring existing Rust code, (3) deciding between borrowing vs cloning or ownership patterns, (4) implementing error handling with Result types, (5) optimizing Rust code for performance, (6) writing tests or documentation for Rust projects.\n",
       "name": "rust-best-practices",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -186,10 +178,9 @@
       "description": "Install and configure shadcn/ui components for React projects. Guides component selection, installation order, dependency management, customisation with semantic tokens, and common UI recipes (forms, data tables, navigation, modals). Use after tailwind-theme-builder has set up the theme infrastructure, when adding components, building forms, creating data tables, or setting up navigation.",
       "name": "shadcn-ui",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -236,10 +227,9 @@
       "description": "Write, review, or improve SwiftUI code following best practices for state management, view composition, performance, macOS-specific APIs, and iOS 26+ Liquid Glass adoption. Use when building new SwiftUI features, refactoring existing views, reviewing code quality, or adopting modern SwiftUI patterns.",
       "name": "swiftui-expert-skill",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -249,10 +239,9 @@
       "description": "Comprehensively reviews SwiftUI code for best practices on modern APIs, maintainability, and performance. Use when reading, writing, or reviewing SwiftUI projects.",
       "name": "swiftui-pro",
       "owner": "base-managed",
-      "source_commit": "0a08fae8e4414c4b0f091fbcf15df80f830e2cef",
+      "source_commit": "e9026241a81bd53287043c8a5093c9f9d4f986f5",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
