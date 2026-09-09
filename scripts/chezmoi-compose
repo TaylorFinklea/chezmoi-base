@@ -4,6 +4,7 @@ set -euo pipefail
 BASE_SOURCE="${CHEZMOI_BASE_SOURCE:-$HOME/git/chezmoi-base}"
 PERSONAL_SOURCE="${CHEZMOI_PERSONAL_SOURCE:-$HOME/git/chezmoi-personal}"
 WORK_SOURCE="${CHEZMOI_WORK_SOURCE:-$HOME/git/chezmoi-work}"
+WORK_SKILLS_SOURCE="${WORK_SKILLS_SOURCE:-$HOME/git/work-skills}"
 CONFIG_ROOT="${CHEZMOI_CONFIG_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi-compose}"
 STATE_ROOT="${CHEZMOI_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/chezmoi-compose}"
 DESTINATION="${CHEZMOI_DESTINATION:-$HOME}"
@@ -75,7 +76,7 @@ run_skillsync() {
     --state-root "$STATE_ROOT/skillsync"
   )
   if [ "$role" = work ]; then
-    args+=(--work-root "$WORK_SOURCE")
+    args+=(--work-root "$WORK_SKILLS_SOURCE")
   fi
   args+=("$@")
   source_skillsync="$BASE_SOURCE/private_dot_local/bin/executable_skillsync"
@@ -103,6 +104,18 @@ require_selected_sources() {
   done
 
   mkdir -p "$STATE_ROOT"
+}
+
+require_work_skills_source() {
+  if [ ! -d "$WORK_SKILLS_SOURCE" ] || [ ! -x "$WORK_SKILLS_SOURCE/scripts/work-skills" ]; then
+    printf 'work skills source does not exist or is incomplete: %s\n' "$WORK_SKILLS_SOURCE" >&2
+    return 66
+  fi
+}
+
+run_work_skills() {
+  CHEZMOI_AI_PROFILE=work \
+    "$WORK_SKILLS_SOURCE/scripts/work-skills" --home "$DESTINATION" "$@"
 }
 
 managed_lists_dir=
@@ -328,13 +341,27 @@ print_summary() {
 }
 
 sync_run() {
-  local source skillsync_status pending_status
+  local source skillsync_status work_skills_check_status work_skills_status pending_status
   pending_status=0
+
+  if [ "$role" = work ]; then
+    require_work_skills_source
+  fi
 
   if [ "$no_pull" -eq 0 ]; then
     for source in "${sources[@]}"; do
       pull_repo "$source"
     done
+    if [ "$role" = work ]; then
+      pull_repo "$WORK_SKILLS_SOURCE"
+    fi
+  fi
+  if [ "$role" = work ]; then
+    work_skills_check_status=0
+    run_work_skills check-source || work_skills_check_status=$?
+    if [ "$work_skills_check_status" -ne 0 ]; then
+      return "$work_skills_check_status"
+    fi
   fi
   preflight --require-sources
   for source in "${sources[@]}"; do
@@ -356,6 +383,13 @@ sync_run() {
   if [ "$skillsync_status" -ne 0 ]; then
     notify_skillsync_conflicts
     return "$skillsync_status"
+  fi
+  if [ "$role" = work ]; then
+    work_skills_status=0
+    run_work_skills sync || work_skills_status=$?
+    if [ "$work_skills_status" -ne 0 ]; then
+      return "$work_skills_status"
+    fi
   fi
   return "$pending_status"
 }
