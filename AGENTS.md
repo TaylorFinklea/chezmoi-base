@@ -33,11 +33,11 @@ This file is repo meta (listed in `.chezmoiignore`), never a managed target.
 3. **Personal-specific or private** → `chezmoi-personal` (personal Mac only —
    on a work Mac, say so and defer; do not stage personal content anywhere else).
 4. **Work-specific** → `chezmoi-work`.
-5. **Mixed-ownership surfaces are special** — codex `config.toml`, the
-   `ai.json` MCP catalog, codex `tui.toml`/`desktop.toml` partials. They have
-   parity tests and a pending decomposition plan (see chezmoi-personal roadmap:
-   Hermes personal/work boundary). Never relocate them casually; duplicated
-   partials must be edited in both overlays together or their parity test fails.
+5. **Codex separates shared policy from app state.** Base owns its generic
+   global instructions and native agent definitions. Codex owns `config.toml`,
+   plugins, MCP connections, permissions, and runtime state on each machine;
+   do not copy these into base. Private integration catalogs stay in their
+   overlay and may still supply other harnesses.
 
 ## Reach check — say it before committing
 

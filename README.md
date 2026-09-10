@@ -6,6 +6,17 @@ It is composed with exactly one overlay: either private personal or private work
 
 Public clone URL: https://github.com/TaylorFinklea/chezmoi-base.git
 
+## Shared Codex workflow
+
+Base owns `~/.codex/AGENTS.md` and the seven native agent definitions in
+`~/.codex/agents/`. Personal and work use the same selected-lead planning,
+Luna-first execution, tiered independent review, and approved native-goal
+policy. The global instructions are a standalone file; repository-specific
+`AGENTS.md` files remain separate.
+
+Codex owns its `config.toml`, plugins, connections, permissions, and runtime
+state. Those files are not copied between machines or managed by base.
+
 ## Normal daily composition
 
 The runner supports `preflight`, `diff`, and `verify`; it never runs `apply`. With no environment overrides, those commands use the per-source TOML files in `~/.config/chezmoi-compose` and per-source persistent state in `~/.local/state/chezmoi-compose`. The state files are operational state, not managed configuration or targets written by chezmoi.
