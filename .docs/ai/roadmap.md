@@ -70,5 +70,5 @@ the front door for all dotfile changes on any machine.
 
 ## Constraints
 
-- Applying to live HOME is human-only; headless/Ralph iterations never apply.
+- Applying to live HOME is human-only; headless iterations never apply.
 - Changes here propagate to the work machine too — verify reach before landing.
