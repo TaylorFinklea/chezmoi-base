@@ -62,10 +62,6 @@ Where `.docs/ai/` is already used:
 
 Keep state concise, current, and non-duplicative.
 
-## Ralph loops
-
-Use `ralph -t <harness> [-n count]` only for an approved, mechanical Plan in `.docs/ai/current-state.md`. It runs one unchecked item per fresh harness session and stops on completion, failure, no progress, or the iteration limit. Do not use it for planning, ambiguous work, or live changes.
-
 ## Git and external actions
 
 - Make a small descriptive commit after completing a code or configuration change unless the user says otherwise.

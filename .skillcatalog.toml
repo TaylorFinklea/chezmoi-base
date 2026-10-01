@@ -31,7 +31,6 @@ activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
 
-
 [[skills]]
 name = "core-data-expert"
 targets = ["pi"]
@@ -61,22 +60,8 @@ upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
-name = "harness-deck"
-targets = ["native", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
 name = "insecure-defaults"
 targets = ["pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
-name = "modern-python"
-targets = ["native", "codex", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"

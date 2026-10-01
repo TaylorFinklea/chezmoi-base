@@ -41,6 +41,6 @@ past session.
 ## Caveat
 
 Live application follows repository policy. Never use bare `chezmoi apply`, and
-never apply from Ralph or another headless loop. An interactive agent may apply
+never apply from a headless loop. An interactive agent may apply
 only exact composed targets explicitly authorized in the current conversation,
 then must verify those exact targets. Otherwise stop after rendering and diffing.
