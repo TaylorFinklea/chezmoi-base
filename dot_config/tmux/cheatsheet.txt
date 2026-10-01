@@ -9,8 +9,6 @@ DAILY FLOW
   C-a |   Split right
   C-a z   Zoom / unzoom the current pane
   C-a P   Popup shell in the current directory
-  C-a A   TmuxAI popup using the Codex profile
-  C-a G   TmuxAI popup using the Copilot profile
   C-a r   Reload tmux config
 
 MOVE AROUND

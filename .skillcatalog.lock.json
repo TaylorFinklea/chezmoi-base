@@ -41,14 +41,14 @@
       "description": "Use when reconciling chezmoi drift in the dotfiles source repo \u2014 running chezmoi diff/apply/re-add, deciding source-vs-home direction, migrating a config surface across agents, or writing a commit/handoff claim about a config file. Carries the direction-decision logic and the hard-won gotchas (sister-config check, mktemp probing, verify-before-claiming, hidden PUA glyphs).",
       "name": "chezmoi-reconcile",
       "owner": "base-managed",
-      "source_commit": "1256987c13cc632f9f07fc578247986df716d668",
+      "source_commit": "131a35dc48fd3d2f20de88c1929a917c21522f76",
       "targets": [
         "native",
         "codex",
         "pi"
       ],
       "transform": "standard",
-      "tree_hash": "sha256:0c57e513541b67a353694daa235d3e6df3965331fa84a085068d2f4a75a30109"
+      "tree_hash": "sha256:8ce6769f6c28031dac0769999a2012dc7cb65c4016a4507bbb457b211ec74624"
     },
     "core-data-expert": {
       "description": "Expert Core Data guidance (iOS/macOS): stack setup, fetch requests & NSFetchedResultsController, saving/merge conflicts, threading & Swift Concurrency, batch operations & persistent history, migrations, performance, and NSPersistentCloudKitContainer/CloudKit sync.",
