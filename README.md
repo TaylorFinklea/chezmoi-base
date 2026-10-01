@@ -43,6 +43,13 @@ profile and repository arguments. It updates only that Skill in its owning
 lockfile. Use `--all` only for an intentional full refresh; bare `lock` refuses
 to choose a scope.
 
+An overlay catalog may set a top-level `disabled_targets` list (for example
+`disabled_targets = ["pi"]`). That profile's `sync`, `diff`, `migrate`, and
+`audit` then ignore those targets (including audit's runtime adapter for that
+harness) for every composed Skill, base and overlay; a Skill with no remaining
+target is simply not materialized. Lock content is
+unchanged and stays profile-independent. The base catalog may not declare it.
+
 ## Isolated validation
 
 Validation that needs direct `chezmoi apply` commands uses a separate temporary destination and state directory: set both `CHEZMOI_DESTINATION` and `CHEZMOI_STATE_ROOT` to `mktemp -d` paths for the runner, pass explicit temporary `--persistent-state` files to each direct apply, and remove both directories with an `EXIT` cleanup trap. The complete personal and work recipes are in [docs/local-data.md](docs/local-data.md).
