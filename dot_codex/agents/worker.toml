@@ -1,6 +1,6 @@
 name = "worker"
 description = "Scoped implementation and QA for an approved task."
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """

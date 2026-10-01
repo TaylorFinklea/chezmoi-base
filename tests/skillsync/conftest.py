@@ -40,8 +40,11 @@ def write_skill(root: Path, name: str, *, description: str = "does a thing",
 
 
 def write_catalog_toml(repo_root: Path, *, owner: str, roles: list[str], source_root: str,
-                        records: list[dict], filename: str = ".skillcatalog.toml") -> Path:
+                        records: list[dict], filename: str = ".skillcatalog.toml",
+                        disabled_targets: list | None = None) -> Path:
     lines = [f"schema = 1", f'owner = "{owner}"', f"roles = {json.dumps(roles)}", f'source_root = "{source_root}"']
+    if disabled_targets is not None:
+        lines.append(f"disabled_targets = {json.dumps(disabled_targets)}")
     for r in records:
         lines.append("")
         lines.append("[[skills]]")
@@ -58,7 +61,7 @@ def write_catalog_toml(repo_root: Path, *, owner: str, roles: list[str], source_
 
 def build_repo(repo_root: Path, *, owner: str, roles: list[str], skill_names: list[str],
                 source_root: str = ".skills-src/skills", targets: list[str] | None = None,
-                description: str = "does a thing") -> Path:
+                description: str = "does a thing", disabled_targets: list | None = None) -> Path:
     """Create a full catalog repo: <repo_root>/.skillcatalog.toml + <repo_root>/<source_root>/<name>/SKILL.md."""
     targets = targets if targets is not None else ["native", "codex", "pi"]
     src_dir = repo_root / source_root
@@ -66,7 +69,8 @@ def build_repo(repo_root: Path, *, owner: str, roles: list[str], skill_names: li
     for name in skill_names:
         write_skill(src_dir, name, description=description)
         records.append({"name": name, "targets": targets})
-    write_catalog_toml(repo_root, owner=owner, roles=roles, source_root=source_root, records=records)
+    write_catalog_toml(repo_root, owner=owner, roles=roles, source_root=source_root, records=records,
+                       disabled_targets=disabled_targets)
     return repo_root
 
 

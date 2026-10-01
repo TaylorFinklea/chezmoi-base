@@ -26,6 +26,11 @@ Model (see the skill-ownership-context-reduction phase spec):
   non-interactively when it still matches the previously generated hash
   recorded in `~/.local/state/skillsync/ledger.json`. Hand-edited targets or
   two-sided drift are reported and left untouched.
+- An overlay catalog may declare a top-level `disabled_targets` list (a
+  subset of the valid targets, e.g. `["pi"]`). That profile then never
+  materializes, diffs, prunes, or scans those targets for any composed Skill,
+  base or overlay; a Skill left with no enabled target is skipped, not an
+  error. Catalog validation and lock content stay profile-independent.
 - `skillsync migrate` adopts pre-existing legacy/hand-installed directories
   that exactly match what skillsync would generate, and prunes only
   directories it previously stamped as owned and that still match the ledger.
@@ -179,6 +184,7 @@ class Catalog:
     repo_relative_source_root: str       # raw TOML string, for ledger "source" provenance (never absolute/private)
     skills: tuple[SkillRecord, ...]
     external_source: bool                # True for work-managed (body lives outside catalog_path's repo)
+    disabled_targets: frozenset[str] = frozenset()  # overlay-only: targets this profile never materializes
 
 
 @dataclass(frozen=True)
@@ -187,6 +193,7 @@ class ComposedCatalog:
     base: Catalog
     overlay: Catalog
     skills: dict[str, tuple[Catalog, SkillRecord]] = field(default_factory=dict)
+    disabled_targets: frozenset[str] = frozenset()
 
 
 def load_catalog(catalog_path: Path, *, work_root=None, validate_sources: bool = True) -> Catalog:
@@ -218,6 +225,11 @@ def load_catalog(catalog_path: Path, *, work_root=None, validate_sources: bool =
     raw_source_root = data.get("source_root")
     if not raw_source_root or not isinstance(raw_source_root, str):
         raise SkillError(f"{catalog_path}: source_root is required")
+    raw_disabled = data.get("disabled_targets", [])
+    if not isinstance(raw_disabled, list) or not all(isinstance(t, str) and t in VALID_TARGETS for t in raw_disabled):
+        raise SkillError(
+            f"{catalog_path}: disabled_targets must be a list drawn from {sorted(VALID_TARGETS)}, got {raw_disabled!r}"
+        )
 
     external_source = owner == "work-managed"
     if external_source:
@@ -275,6 +287,7 @@ def load_catalog(catalog_path: Path, *, work_root=None, validate_sources: bool =
         source_root=source_root, catalog_path=catalog_path,
         repo_relative_source_root=raw_source_root,
         skills=tuple(records), external_source=external_source,
+        disabled_targets=frozenset(raw_disabled),
     )
 
     if validate_sources:
@@ -341,6 +354,8 @@ def compose_profile(profile: str, base: Catalog, overlay: Catalog) -> ComposedCa
         raise SkillError(f"unknown profile: {profile!r}")
     if base.owner != "base-managed":
         raise SkillError(f"base catalog owner must be base-managed, got {base.owner!r}")
+    if base.disabled_targets:
+        raise SkillError("disabled_targets is overlay-only; the base catalog serves every profile")
     if profile not in base.roles:
         raise SkillError(f"base catalog does not declare role {profile!r} (roles={base.roles})")
     expected_owner = EXPECTED_OVERLAY_OWNER[profile]
@@ -359,7 +374,8 @@ def compose_profile(profile: str, base: Catalog, overlay: Catalog) -> ComposedCa
 
     skills: dict[str, tuple[Catalog, SkillRecord]] = {r.name: (base, r) for r in base.skills}
     skills.update({r.name: (overlay, r) for r in overlay.skills})
-    return ComposedCatalog(profile=profile, base=base, overlay=overlay, skills=skills)
+    return ComposedCatalog(profile=profile, base=base, overlay=overlay, skills=skills,
+                           disabled_targets=overlay.disabled_targets)
 
 
 # --- tree hashing -------------------------------------------------------------
@@ -737,6 +753,8 @@ def compute_sync_states(
             raise SkillError(f"refusing unsafe skill name {name!r} ({unsafe_reason})")
         src_dir = catalog.source_root / name
         for target in record.targets:
+            if target in composed.disabled_targets:
+                continue
             dest = target_roots[target] / name
             key = ledger_key(target, name)
             entry = ledger.get("targets", {}).get(key)
@@ -782,6 +800,8 @@ def find_prune_candidates(
         if key in live_keys:
             continue
         target, _, name = key.partition(":")
+        if target in composed.disabled_targets:
+            continue  # disabled targets are ignored entirely, never pruned
         candidates.append((target, name, entry))
     return candidates
 
@@ -1216,16 +1236,18 @@ def _yaml_runtime_plugins(home: Path, *, adapter: str, config_path: Path, instal
     return observed, issues
 
 
-def collect_runtime_inventory(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
-    """Read only the supplied isolated runtime tree; adapters classify, never copy."""
+def collect_runtime_inventory(
+    home: Path, disabled_targets: frozenset = frozenset()
+) -> tuple[list[ObservedSkill], list[dict]]:
+    """Read only the supplied isolated runtime tree; adapters classify, never copy.
+    Adapters for a profile's disabled targets are not scanned."""
     home = Path(home)
     observed: list[ObservedSkill] = []
     issues: list[dict] = []
-    for adapter in (_claude_runtime, _codex_runtime):
-        entries, adapter_issues = adapter(home)
-        observed.extend(entries)
-        issues.extend(adapter_issues)
-    for adapter in (_opencode_runtime, _pi_runtime):
+    for target, adapter in (("native", _claude_runtime), ("codex", _codex_runtime),
+                            (None, _opencode_runtime), ("pi", _pi_runtime)):
+        if target in disabled_targets:
+            continue
         entries, adapter_issues = adapter(home)
         observed.extend(entries)
         issues.extend(adapter_issues)
@@ -1535,22 +1557,25 @@ def cmd_audit(args: argparse.Namespace) -> int:
     )
     composed = compose_profile(args.profile, base, overlay)
     target_roots = resolve_target_roots(args.home, args.target_overrides)
+    scan_roots = {t: r for t, r in target_roots.items() if t not in composed.disabled_targets}
     ledger = load_ledger(args.state_root)
 
     manual: dict[str, str] = {}
     manual_meta: dict[str, dict] = {}
-    for name, (catalog, _record) in composed.skills.items():
+    for name, (catalog, record) in composed.skills.items():
+        if set(record.targets) <= composed.disabled_targets:
+            continue  # never materialized for this profile
         meta, _ = split_frontmatter((catalog.source_root / name / "SKILL.md").read_text())
         desc = str(meta.get("description") or "")
         manual[name] = catalog.owner
         manual_meta[name] = {"chars": len(desc), "estimated_tokens": round(len(desc) / 4)}
 
-    observed, runtime_issues = collect_runtime_inventory(args.home)
+    observed, runtime_issues = collect_runtime_inventory(args.home, composed.disabled_targets)
     report = classify_inventory(manual, observed)
     report["manual_meta"] = manual_meta
     report["runtime_issues"] = runtime_issues
     report["strict_runtime"] = args.strict_runtime
-    for u in scan_unmanaged(target_roots, set(manual), ledger):
+    for u in scan_unmanaged(scan_roots, set(manual), ledger):
         report["unmanaged"].append({"name": u["name"], "origin": "unmanaged", "target": u["target"]})
 
     if args.format == "json":

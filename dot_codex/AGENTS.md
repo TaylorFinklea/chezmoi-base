@@ -62,10 +62,6 @@ Where `.docs/ai/` is already used:
 
 Keep state concise, current, and non-duplicative.
 
-## Ralph loops
-
-Use `ralph -t <harness> [-n count]` only for an approved, mechanical Plan in `.docs/ai/current-state.md`. It runs one unchecked item per fresh harness session and stops on completion, failure, no progress, or the iteration limit. Do not use it for planning, ambiguous work, or live changes.
-
 ## Git and external actions
 
 - Make a small descriptive commit after completing a code or configuration change unless the user says otherwise.
@@ -119,9 +115,9 @@ return to the original worker, staying with Luna unless execution has already
 escalated to Terra.
 
 Run a routine independent review with `reviewer` (Terra) at high effort. Use
-`reviewer_sol` for consequential changes or unresolved routine reviews, and
-`reviewer_astra` for the hardest or still-unresolved reviews. A higher review
-may be selected directly when risk warrants it. Keep `planner` (Sol) as a
+`reviewer_sol` for consequential changes, unresolved routine reviews, and the
+hardest or still-unresolved reviews. A higher review may be selected directly
+when risk warrants it. Keep `planner` (Sol) as a
 compatibility role; the main lead should not routinely spawn another planner.
 Require actual diff/source/test evidence and concise worker and reviewer
 reports. A missing, failed, or timed-out review is not a pass. If native

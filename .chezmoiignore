@@ -17,3 +17,10 @@ tests/
 # a chezmoi target
 ai-scratch
 ai-scratch/**
+
+# Pi is retired on personal Macs; work still uses it. Base composes under both
+# profiles, so branch on machine_role (never ai_profile).
+{{- if eq (toString (index .chezmoi.config.data "machine_role")) "personal" }}
+.pi
+.pi/**
+{{- end }}
