@@ -34,7 +34,7 @@ transform = "standard"
 
 [[skills]]
 name = "core-data-expert"
-targets = ["codex", "pi"]
+targets = ["pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
@@ -55,7 +55,7 @@ transform = "standard"
 
 [[skills]]
 name = "git-cleanup"
-targets = ["codex", "pi"]
+targets = ["pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
@@ -82,20 +82,6 @@ upstream_ref = "repo-history"
 transform = "standard"
 
 [[skills]]
-name = "rust-async-patterns"
-targets = ["pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
-name = "rust-best-practices"
-targets = ["native", "pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
 name = "shadcn-ui"
 targets = ["pi"]
 activation = "automatic"
@@ -104,7 +90,7 @@ transform = "standard"
 
 [[skills]]
 name = "swift-concurrency"
-targets = ["native", "codex", "pi"]
+targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"
@@ -119,13 +105,6 @@ transform = "standard"
 [[skills]]
 name = "swiftui-expert-skill"
 targets = ["pi"]
-activation = "automatic"
-upstream_ref = "repo-history"
-transform = "standard"
-
-[[skills]]
-name = "swiftui-pro"
-targets = ["native", "pi"]
 activation = "automatic"
 upstream_ref = "repo-history"
 transform = "standard"

@@ -54,9 +54,8 @@
       "description": "Expert Core Data guidance (iOS/macOS): stack setup, fetch requests & NSFetchedResultsController, saving/merge conflicts, threading & Swift Concurrency, batch operations & persistent history, migrations, performance, and NSPersistentCloudKitContainer/CloudKit sync.",
       "name": "core-data-expert",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "41f00f2780c07440a8358fdbfe9d3cd8402fc3bb",
       "targets": [
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -88,9 +87,8 @@
       "description": "Safely analyzes and cleans up local git branches and worktrees by categorizing them as merged, squash-merged, superseded, or active work.",
       "name": "git-cleanup",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "41f00f2780c07440a8358fdbfe9d3cd8402fc3bb",
       "targets": [
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -132,29 +130,6 @@
       "transform": "standard",
       "tree_hash": "sha256:f001b4846799536ea1cc5eb6c6160215331105afd984e21f44f84e02962171ab"
     },
-    "rust-async-patterns": {
-      "description": "Master Rust async programming with Tokio, async traits, error handling, and concurrent patterns. Use when building async Rust applications, implementing concurrent systems, or debugging async code.",
-      "name": "rust-async-patterns",
-      "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
-      "targets": [
-        "pi"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:1696c560a148af08352a50433eda551c21a101ea5c851bd404fbbe8f061bef7d"
-    },
-    "rust-best-practices": {
-      "description": "Guide for writing idiomatic Rust code based on Apollo GraphQL's best practices handbook. Use this skill when: (1) writing new Rust code or functions, (2) reviewing or refactoring existing Rust code, (3) deciding between borrowing vs cloning or ownership patterns, (4) implementing error handling with Result types, (5) optimizing Rust code for performance, (6) writing tests or documentation for Rust projects.\n",
-      "name": "rust-best-practices",
-      "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
-      "targets": [
-        "native",
-        "pi"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:a4bb2a0a5e4e46bf5e56289a36df8d01b9c25d89fab38be207ec7ef7a1d4432a"
-    },
     "shadcn-ui": {
       "description": "Install and configure shadcn/ui components for React projects. Guides component selection, installation order, dependency management, customisation with semantic tokens, and common UI recipes (forms, data tables, navigation, modals). Use after tailwind-theme-builder has set up the theme infrastructure, when adding components, building forms, creating data tables, or setting up navigation.",
       "name": "shadcn-ui",
@@ -170,10 +145,9 @@
       "description": "Diagnose data races, convert callback-based code to async/await, implement actor isolation patterns, resolve Sendable conformance issues, and guide Swift 6 migration. Use when developers mention: (1) Swift Concurrency, async/await, actors, or tasks, (2) \"use Swift Concurrency\" or \"modern concurrency patterns\", (3) migrating to Swift 6, (4) data races or thread safety issues, (5) refactoring closures to async/await, (6) @MainActor, Sendable, or actor isolation, (7) concurrent code architecture or performance optimization, (8) concurrency-related linter warnings (SwiftLint or similar; e.g. async_without_await, Sendable/actor isolation/MainActor lint).",
       "name": "swift-concurrency",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "41f00f2780c07440a8358fdbfe9d3cd8402fc3bb",
       "targets": [
         "native",
-        "codex",
         "pi"
       ],
       "transform": "standard",
@@ -202,18 +176,6 @@
       ],
       "transform": "standard",
       "tree_hash": "sha256:6b3a372f83099d5cdae277270e125db26f7e8e86e9054284311dbc3214cbb1d9"
-    },
-    "swiftui-pro": {
-      "description": "Comprehensively reviews SwiftUI code for best practices on modern APIs, maintainability, and performance. Use when reading, writing, or reviewing SwiftUI projects.",
-      "name": "swiftui-pro",
-      "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
-      "targets": [
-        "native",
-        "pi"
-      ],
-      "transform": "standard",
-      "tree_hash": "sha256:fd618d0a716e989941e881475a2de132e3fe129aa193bfcb9e24fb29dc4ad938"
     }
   }
 }

@@ -1,6 +1,6 @@
 name = "explorer"
 description = "Read-only repository mapping and focused codebase questions."
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 developer_instructions = """
