@@ -11,8 +11,9 @@ the front door for all dotfile changes on any machine.
 
 ### Now
 
-- [ ] **Herdr Ask OMP backend — source ready; human apply pending**
-      (2026-08-01). Base now renders a safe custom-process `omp` backend with
+- [x] **Herdr Ask OMP backend — retired 2026-10-01** with herdr and
+      herdr-ask everywhere; superseded, no apply needed. Original note
+      (2026-08-01): Base now renders a safe custom-process `omp` backend with
       sessions, tools, LSP, PTY execution, extensions, skills, and rules
       disabled; `pi` remains the default. Personal preflight and released
       Herdr Ask 0.1.0 validation pass. User to run the targeted composed apply

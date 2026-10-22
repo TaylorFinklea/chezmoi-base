@@ -113,3 +113,17 @@ work machines. The personal overlay retains `moshi-status.sh` and adds
 This preserves one-target/one-owner composition while keeping Moshi hooks out
 of work environments. The public-safety allowlist explicitly admits the six
 public plugin repositories used by the base external manifest.
+
+## [2026-10-14] Codex uses only Luna and Sol, with Sol plus Opus review
+
+Codex routing uses only Luna 6 and Sol 6.1. Luna implements and explores;
+`worker_sol` replaces `worker_terra` as the escalation after a failed Luna
+attempt, and `reviewer` now runs Sol and absorbs `reviewer_sol`. Terra is never
+used, and Astra only when the owner asks.
+
+Every non-trivial change gets the Sol `reviewer` plus a different-family Claude
+Opus 5.5 review before it is committed or reported done. The Opus review runs
+read-only through `claude -p`, or through GitHub Copilot CLI on work machines,
+where Claude models come from Copilot. Reviewed commits carry `Reviewed-by:`
+trailers. Overlays list the two retired agent files in `.chezmoiremove` so
+composed applies delete them on both machines.

@@ -88,13 +88,14 @@ For chezmoi-managed configuration, never run bare `chezmoi apply`. A targeted li
 
 ## Codex routing
 
-Keep the main conversation and Plan-mode planning with the selected lead,
-normally Astra. For suitable substantive execution, the lead delegates to
-native agents automatically and starts with `worker` (Luna), including when the
-work looks complex. Use `explorer` (Luna) for read-only investigation.
-Escalate execution to `worker_terra` (Terra) only after a concrete, bounded
-Luna attempt and repair was unsuccessful; complexity alone is not an escalation
-reason. Permission, authentication, tool-availability, and environment
+Keep the main conversation and Plan-mode planning with the lead model the user
+selected. Use only Luna and Sol: never use Terra, and never switch to or spawn
+Astra unless the user asks. For suitable substantive execution, the lead
+delegates to native agents automatically and starts with `worker` (Luna),
+including when the work looks complex. Use `explorer` (Luna) for read-only
+investigation. Escalate execution to `worker_sol` (Sol) only after a concrete,
+bounded Luna attempt and repair was unsuccessful; complexity alone is not an
+escalation reason. Permission, authentication, tool-availability, and environment
 blockers never justify bypassing controls or blindly changing models; return
 those blockers.
 
@@ -112,17 +113,24 @@ builds, tests, simulator/browser operation, inspection, and in-scope repairs;
 only one worker may own a mutable UI or simulator session at a time. Workers
 must not recursively delegate, expand scope, or waive authorization. Findings
 return to the original worker, staying with Luna unless execution has already
-escalated to Terra.
+escalated to Sol.
 
-Run a routine independent review with `reviewer` (Terra) at high effort. Use
-`reviewer_sol` for consequential changes, unresolved routine reviews, and the
-hardest or still-unresolved reviews. A higher review may be selected directly
-when risk warrants it. Keep `planner` (Sol) as a
+Every non-trivial change gets two read-only reviews before it is committed or
+reported done: `reviewer` (Sol) and a different-family Claude Opus 5.5 review.
+Trivial means typos, comments, or edits with no behavior change. The user
+approves sending the diff and relevant context under review to Claude Opus 5.5
+for that review. Run it read-only, with the diff in the request:
+`claude -p "<review request>" --model opus --effort medium --tools "Read,Grep,Glob"`
+(keep the request first: `--tools` takes a list).
+On work machines, Claude models come through GitHub Copilot CLI instead: run the
+same review with `copilot -p` on its Claude Opus 5.5 model, allowing only
+read-only tools. Add `Reviewed-by: gpt-6.1-sol` and
+`Reviewed-by: claude-opus-5-5` trailers to the commit. Keep `planner` (Sol) as a
 compatibility role; the main lead should not routinely spawn another planner.
 Require actual diff/source/test evidence and concise worker and reviewer
 reports. A missing, failed, or timed-out review is not a pass. If native
 delegation or a required review is unavailable, report blocked delegation or
-review; do not silently perform worker implementation or tests on Astra, or
+review; do not silently perform worker implementation or tests on the lead, or
 count parent self-review as independent approval. Repair recoverable benign
 issues within scope and retry when reasonable. Do not repeat successful tests
 or duplicate implementation without a reason. Stop after a bounded

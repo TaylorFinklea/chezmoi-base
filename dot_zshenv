@@ -2,8 +2,7 @@
 # This file is always sourced, so it should contain only environment variables
 
 # Editor — set here (not just in interactive rc) so child processes launched
-# from non-interactive zsh sessions (mosh-server → sh -lc → herdr, etc.)
-# inherit it. herdr's edit_scrollback uses ${EDITOR:-vi}.
+# from non-interactive zsh sessions (e.g. mosh-server → sh -lc) inherit it.
 export EDITOR=nvim
 export VISUAL=nvim
 

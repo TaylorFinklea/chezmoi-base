@@ -4,7 +4,7 @@ background = #16161e
 font-family = "FiraCode Nerd Font"
 macos-option-as-alt = true
 
-# Translate Cmd+h/j/k/l to Alt+h/j/k/l sequences so herdr (and other TUIs) see them
+# Translate Cmd+h/j/k/l to Alt+h/j/k/l sequences so tmux (and other TUIs) see them
 # without colliding with AeroSpace, which owns physical Alt+h/j/k/l for macOS window nav.
 keybind = cmd+h=esc:h
 keybind = cmd+j=esc:j
