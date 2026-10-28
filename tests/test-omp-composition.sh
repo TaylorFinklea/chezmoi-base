@@ -16,14 +16,13 @@ fail() {
 }
 
 for required in "$repo_root/.chezmoitemplates/omp/skills.yml" \
-  "$personal_overlay/dot_omp/agent/config.yml.tmpl" \
+  "$personal_overlay/dot_omp/private_agent/config.yml.tmpl" \
   "$work_overlay/dot_omp/agent/config.yml.tmpl"; do
   [ -f "$required" ] || fail "missing required OMP source: $required"
 done
 
 cat > "$expected_skills" <<'EOF'
 skills:
-  enableClaudeUser: true
   enableAgentsUser: false
   enableCodexUser: false
   enablePiUser: false
@@ -31,17 +30,18 @@ EOF
 
 render() {
   source=$1
+  template=$2
   CHEZMOI_BASE_SOURCE="$repo_root" chezmoi execute-template \
     --source "$source" \
-    --file "$source/dot_omp/agent/config.yml.tmpl"
+    --file "$source/$template"
 }
 
 personal_rendered="$tmp/personal.yml"
 work_rendered="$tmp/work.yml"
-render "$personal_overlay" > "$personal_rendered"
-render "$work_overlay" > "$work_rendered"
+render "$personal_overlay" dot_omp/private_agent/config.yml.tmpl > "$personal_rendered"
+render "$work_overlay" dot_omp/agent/config.yml.tmpl > "$work_rendered"
 
-if ! head -n 5 "$personal_rendered" | cmp -s "$expected_skills" -; then
+if ! head -n 4 "$personal_rendered" | cmp -s "$expected_skills" -; then
   fail 'personal render does not begin with the exact shared skills toggles'
 fi
 
@@ -50,7 +50,7 @@ if ! cmp -s "$expected_skills" "$work_rendered"; then
   fail 'work render must contain only the shared skills toggles'
 fi
 
-for setting in providers symbolPreset theme setupVersion modelRoles defaultThinkingLevel cycleOrder retry task; do
+for setting in providers symbolPreset theme setupVersion modelRoles defaultThinkingLevel cycleOrder task; do
   if ! grep -Eq "^${setting}:" "$personal_rendered"; then
     fail "personal render lost ${setting}"
   fi

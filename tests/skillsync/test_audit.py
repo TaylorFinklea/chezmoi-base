@@ -134,8 +134,8 @@ def test_runtime_inventory_reports_missing_real_pi_and_opencode_specifiers(ss, t
         {"adapter": "pi", "provider": "npm:pi-web-access", "state": "missing-active-install"},
     ]
 
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native"])
-    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["codex"])
     rc = ss.main([
         "audit", "--profile", "personal", "--base-root", str(base), "--overlay-root", str(personal),
         "--home", str(runtime_home("missing-runtime-package-specifiers")),
@@ -213,27 +213,27 @@ def test_classify_inventory_buckets_system_and_unmanaged(ss):
 
 
 def test_scan_unmanaged_finds_stray_directory_outside_catalog_and_ledger(ss, tmp_path):
-    target_roots = {"native": tmp_path / "claude"}
-    stray = target_roots["native"] / "not-in-catalog"
+    target_roots = {"codex": tmp_path / "skills"}
+    stray = target_roots["codex"] / "not-in-catalog"
     stray.mkdir(parents=True)
     (stray / "SKILL.md").write_text("x")
     ledger = {"targets": {}}
     found = ss.scan_unmanaged(target_roots, {"alpha"}, ledger)
-    assert found == [{"target": "native", "name": "not-in-catalog"}]
+    assert found == [{"target": "codex", "name": "not-in-catalog"}]
 
 
 def test_scan_unmanaged_ignores_ledger_tracked_directory(ss, tmp_path):
-    target_roots = {"native": tmp_path / "claude"}
-    dest = target_roots["native"] / "alpha"
+    target_roots = {"codex": tmp_path / "skills"}
+    dest = target_roots["codex"] / "alpha"
     dest.mkdir(parents=True)
-    ledger = {"targets": {"native:alpha": {"owner": "base-managed"}}}
+    ledger = {"targets": {"codex:alpha": {"owner": "base-managed"}}}
     found = ss.scan_unmanaged(target_roots, set(), ledger)
     assert found == []
 
 
 def test_cmd_audit_json_reports_manual_and_metadata(ss, tmp_path):
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native"], description="a" * 40)
-    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"], description="a" * 40)
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["codex"])
     rc = ss.main([
         "audit", "--profile", "personal", "--base-root", str(base), "--overlay-root", str(personal),
         "--home", str(tmp_path / "home"), "--state-root", str(tmp_path / "state"), "--format", "json",
@@ -242,8 +242,8 @@ def test_cmd_audit_json_reports_manual_and_metadata(ss, tmp_path):
 
 
 def test_cmd_audit_strict_runtime_rejects_missing_enabled_install(ss, tmp_path):
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native"])
-    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["codex"])
     home = tmp_path / "home"
     shutil.copytree(runtime_home("missing-active-install"), home)
     rc = ss.main([
@@ -254,8 +254,8 @@ def test_cmd_audit_strict_runtime_rejects_missing_enabled_install(ss, tmp_path):
 
 
 def test_cmd_audit_markdown_format_smoke(ss, tmp_path, capsys):
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native"])
-    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["codex"])
     rc = ss.main([
         "audit", "--profile", "personal", "--base-root", str(base), "--overlay-root", str(personal),
         "--home", str(tmp_path / "home"), "--state-root", str(tmp_path / "state"), "--format", "markdown",

@@ -6,7 +6,6 @@ CI error output, build logs, or test failure messages are fed to an AI agent as 
 
 | Action | Applicable | Notes |
 |--------|-----------|-------|
-| Claude Code Action | Yes | Confirmed -- PoC 23. Receives CI logs via workflow inputs or step outputs. |
 | OpenAI Codex | Yes | Applicable if workflow passes error logs to prompt. |
 | GitHub AI Inference | Yes | Applicable if captured CI output is included in the prompt. |
 
@@ -54,30 +53,6 @@ Attacker's PR code
 ## Why It Matters
 
 The attacker controls what the CI system outputs by carefully crafting their code. A test file can produce test failure messages containing prompt injection. A source file can trigger specific compiler errors with injection payloads embedded in string literals or identifiers. The AI sees this as "CI output to fix" but the error messages contain the attacker's instructions. Because the logs appear to be legitimate CI output, they bypass any prompt framing that instructs the AI to treat user input as untrusted.
-
-## Example: Vulnerable Pattern
-
-From PoC 23 (Significant-Gravitas/AutoGPT):
-
-```yaml
-on:
-  workflow_dispatch:
-    inputs:
-      error_logs:
-        type: string                                # CI logs passed as workflow input
-
-jobs:
-  auto-fix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: anthropics/claude-code-action@v1
-        with:
-          prompt: |
-            Error logs:
-            ${{ github.event.inputs.error_logs }}   # Attacker-controlled CI output
-            Analyze the CI failure logs above and attempt to fix the issues.
-```
 
 ## False Positives
 

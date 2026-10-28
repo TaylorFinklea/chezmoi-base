@@ -6,7 +6,6 @@ Direct `${{ github.event.* }}` expressions embedded in AI prompt fields. The YAM
 
 | Action | Applicable | Notes |
 |--------|-----------|-------|
-| Claude Code Action | Yes | Check `with.prompt` and `with.claude_args` for embedded expressions |
 | OpenAI Codex | Yes | Check `with.prompt`, `with.prompt-file` (if resolving to attacker-controlled path), `with.codex-args` |
 | GitHub AI Inference | Yes | Check `with.prompt`, `with.system-prompt`, `with.system-prompt-file` |
 
@@ -34,7 +33,6 @@ The expression is resolved before any step code executes. The AI action receives
 - `with.prompt` -- the primary prompt field (all actions)
 - `with.system-prompt` -- system prompt (GitHub AI Inference)
 - `with.prompt-file` -- if it resolves to an attacker-controlled path (Codex, AI Inference)
-- `with.claude_args` -- may embed expressions as inline instructions (Claude Code Action)
 - `with.codex-args` -- may embed expressions (OpenAI Codex)
 
 The expression must reference an attacker-controlled context. See [foundations.md](foundations.md) for the complete list.

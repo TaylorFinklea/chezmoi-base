@@ -46,7 +46,7 @@ def test_load_catalog_rejects_missing_skill_keys(ss, tmp_path):
     (repo / ".skillcatalog.toml").write_text(
         'schema = 1\nowner = "base-managed"\nroles = ["personal", "work"]\n'
         'source_root = ".skills-src/skills"\n\n[[skills]]\nname = "alpha"\n'
-        'targets = ["native"]\n'  # missing activation/upstream_ref/transform
+        'targets = ["codex"]\n'  # missing activation/upstream_ref/transform
     )
     with pytest.raises(ss.SkillError, match="missing keys"):
         ss.load_catalog(repo / ".skillcatalog.toml")
@@ -56,7 +56,7 @@ def test_load_catalog_rejects_duplicate_name_within_catalog(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "alpha", "targets": ["native"]},
+                        records=[{"name": "alpha", "targets": ["codex"]},
                                  {"name": "alpha", "targets": ["codex"]}])
     write_skill(repo / ".skills-src" / "skills", "alpha")
     with pytest.raises(ss.SkillError, match="duplicate skill name"):
@@ -67,7 +67,7 @@ def test_load_catalog_rejects_reserved_skill_name(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": ".system", "targets": ["native"]}])
+                        records=[{"name": ".system", "targets": ["codex"]}])
     with pytest.raises(ss.SkillError, match="reserved path marker"):
         ss.load_catalog(repo / ".skillcatalog.toml")
 
@@ -76,7 +76,7 @@ def test_load_catalog_rejects_skill_name_with_path_separator(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "alpha/evil", "targets": ["native"]}])
+                        records=[{"name": "alpha/evil", "targets": ["codex"]}])
     with pytest.raises(ss.SkillError, match="not a safe path segment"):
         ss.load_catalog(repo / ".skillcatalog.toml")
 
@@ -85,7 +85,7 @@ def test_load_catalog_rejects_skill_name_that_is_dot_dot(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "..", "targets": ["native"]}])
+                        records=[{"name": "..", "targets": ["codex"]}])
     with pytest.raises(ss.SkillError, match="not a safe path segment"):
         ss.load_catalog(repo / ".skillcatalog.toml")
 
@@ -128,7 +128,7 @@ def test_load_catalog_rejects_bad_activation(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "alpha", "targets": ["native"], "activation": "sometimes"}])
+                        records=[{"name": "alpha", "targets": ["codex"], "activation": "sometimes"}])
     with pytest.raises(ss.SkillError, match="activation must be one of"):
         ss.load_catalog(repo / ".skillcatalog.toml")
 
@@ -137,7 +137,7 @@ def test_load_catalog_rejects_bad_transform(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "alpha", "targets": ["native"], "transform": "weird"}])
+                        records=[{"name": "alpha", "targets": ["codex"], "transform": "weird"}])
     with pytest.raises(ss.SkillError, match="transform must be one of"):
         ss.load_catalog(repo / ".skillcatalog.toml")
 
@@ -146,7 +146,7 @@ def test_load_catalog_rejects_empty_upstream_ref(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "alpha", "targets": ["native"], "upstream_ref": "  "}])
+                        records=[{"name": "alpha", "targets": ["codex"], "upstream_ref": "  "}])
     with pytest.raises(ss.SkillError, match="upstream_ref must be nonempty"):
         ss.load_catalog(repo / ".skillcatalog.toml")
 
@@ -155,7 +155,7 @@ def test_load_catalog_rejects_missing_skill_md(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "ghost", "targets": ["native"]}])
+                        records=[{"name": "ghost", "targets": ["codex"]}])
     (repo / ".skills-src" / "skills").mkdir(parents=True)
     with pytest.raises(ss.SkillError, match="missing SKILL.md"):
         ss.load_catalog(repo / ".skillcatalog.toml")
@@ -165,7 +165,7 @@ def test_load_catalog_rejects_frontmatter_name_mismatch(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "alpha", "targets": ["native"]}])
+                        records=[{"name": "alpha", "targets": ["codex"]}])
     src = repo / ".skills-src" / "skills" / "alpha"
     src.mkdir(parents=True)
     (src / "SKILL.md").write_text("---\nname: not-alpha\ndescription: d\n---\nbody\n")
@@ -177,7 +177,7 @@ def test_load_catalog_rejects_empty_description(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "alpha", "targets": ["native"]}])
+                        records=[{"name": "alpha", "targets": ["codex"]}])
     src = repo / ".skills-src" / "skills" / "alpha"
     src.mkdir(parents=True)
     (src / "SKILL.md").write_text("---\nname: alpha\ndescription: ''\n---\nbody\n")
@@ -190,7 +190,7 @@ def test_load_catalog_schema_only_skips_source_touch(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="base-managed", roles=["personal", "work"],
                         source_root=".skills-src/skills",
-                        records=[{"name": "ghost", "targets": ["native"]}])
+                        records=[{"name": "ghost", "targets": ["codex"]}])
     # deliberately no source tree on disk at all
     catalog = ss.load_catalog(repo / ".skillcatalog.toml", validate_sources=False)
     assert catalog.skills[0].name == "ghost"
@@ -199,7 +199,7 @@ def test_load_catalog_schema_only_skips_source_touch(ss, tmp_path):
 def test_load_catalog_work_source_root_unresolved_without_work_root(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="work-managed", roles=["work"], source_root="skills",
-                        records=[{"name": "wskill", "targets": ["native"]}])
+                        records=[{"name": "wskill", "targets": ["codex"]}])
     catalog = ss.load_catalog(repo / ".skillcatalog.toml", validate_sources=False)
     assert catalog.source_root is None
     assert catalog.external_source is True
@@ -208,6 +208,6 @@ def test_load_catalog_work_source_root_unresolved_without_work_root(ss, tmp_path
 def test_load_catalog_work_requires_work_root_to_validate_sources(ss, tmp_path):
     repo = tmp_path / "repo"
     write_catalog_toml(repo, owner="work-managed", roles=["work"], source_root="skills",
-                        records=[{"name": "wskill", "targets": ["native"]}])
+                        records=[{"name": "wskill", "targets": ["codex"]}])
     with pytest.raises(ss.SkillError, match="source root unresolved"):
         ss.load_catalog(repo / ".skillcatalog.toml", validate_sources=True)

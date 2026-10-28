@@ -6,7 +6,6 @@ An attacker opens a fork pull request against a repository that uses `pull_reque
 
 | Action | Applicable | Notes |
 |--------|-----------|-------|
-| Claude Code Action | Yes | Confirmed -- PoC 18. Reads files from checked-out working directory. |
 | OpenAI Codex | Yes | Applicable. Reads files from working directory for code analysis. |
 | GitHub AI Inference | Possible | Less common, but applicable if the prompt instructs the model to read file contents from disk. |
 
@@ -54,29 +53,6 @@ Attacker opens fork PR
 ## Why It Matters
 
 The AI agent runs with base branch secrets -- potentially including `GITHUB_TOKEN` with write permissions, deployment keys, API credentials, and any secrets configured in the repository. But it processes attacker-modified files. The attacker can embed prompt injection payloads in any file the AI is likely to read: code comments, README files, configuration files, test files, or documentation. If the injection succeeds, the AI executes attacker instructions with access to those secrets.
-
-## Example: Vulnerable Pattern
-
-From PoC 18 (frankbria/ralph-claude-code):
-
-```yaml
-on:
-  pull_request_target:                              # Step 1: Runs in base branch context
-    types: [opened, synchronize]
-
-jobs:
-  claude-review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}  # Step 2: Checks out ATTACKER's code
-      - uses: anthropics/claude-code-action@v1
-        with:
-          prompt: |
-            Please review this pull request and provide feedback
-            # AI reads attacker-modified files from disk with base repo secrets available
-```
 
 ## False Positives
 

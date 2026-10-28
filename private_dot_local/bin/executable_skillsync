@@ -20,8 +20,8 @@ Model (see the skill-ownership-context-reduction phase spec):
   lock. `lock --all` is the explicit broad refresh. `skillsync check` fails
   when a tree drifts from the lock; lock JSON is never hand-edited.
 - `skillsync sync` projects catalog Skills into the physical target roots
-  (`native` -> ~/.claude/skills, `codex` -> ~/.codex/skills, `pi` ->
-  ~/.pi/agent/skills, `hermes` -> ~/.hermes/skills, personal only) via
+  (`codex` -> ~/.codex/skills, `pi` -> ~/.pi/agent/skills, `hermes` ->
+  ~/.hermes/skills, personal only) via
   staged-then-atomically-renamed writes, and only updates a target
   non-interactively when it still matches the previously generated hash
   recorded in `~/.local/state/skillsync/ledger.json`. Hand-edited targets or
@@ -78,7 +78,7 @@ LEDGER_FILENAME = "ledger.json"
 
 VALID_OWNERS = frozenset({"base-managed", "personal-managed", "work-managed"})
 VALID_ROLES = frozenset({"personal", "work"})
-VALID_TARGETS = frozenset({"native", "codex", "pi", "hermes"})
+VALID_TARGETS = frozenset({"codex", "pi", "hermes"})
 VALID_ACTIVATIONS = frozenset({"automatic", "explicit"})
 VALID_TRANSFORMS = frozenset({"standard", "codex-reduced"})
 
@@ -87,7 +87,6 @@ VALID_TRANSFORMS = frozenset({"standard", "codex-reduced"})
 # target's allowed roles (e.g. hermes is personal-only, so a base catalog
 # whose roles include "work" can never target hermes).
 TARGET_ALLOWED_ROLES = {
-    "native": frozenset({"personal", "work"}),
     "codex": frozenset({"personal", "work"}),
     "pi": frozenset({"personal", "work"}),
     "hermes": frozenset({"personal"}),
@@ -97,10 +96,16 @@ EXPECTED_OVERLAY_OWNER = {"personal": "personal-managed", "work": "work-managed"
 
 # Physical target roots, relative to --home.
 DEFAULT_TARGET_RELATIVE = {
-    "native": (".claude", "skills"),
     "codex": (".codex", "skills"),
     "pi": (".pi", "agent", "skills"),
     "hermes": (".hermes", "skills"),
+}
+
+# The retired `native` target is recognized only by migration so ledger-owned
+# directories from the former projection can be removed safely. It is never a
+# valid catalog, sync, or target-override destination.
+LEGACY_MIGRATION_TARGET_RELATIVE = {
+    "native": (".claude", "skills"),
 }
 
 # Rejected regardless of default vs. explicit --target-root override.
@@ -493,9 +498,37 @@ def read_owner_stamp(dest: Path) -> Optional[dict]:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        data = json.loads(p.read_text())
+        return data if isinstance(data, dict) else None
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _is_tree_hash(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def _has_symlink_component(home: Path, path: Path) -> bool:
+    """Check each lexical path component from the supplied home to `path`.
+
+    A path outside home is not eligible for migration cleanup. Keep the check
+    lexical: resolving first would hide the symlink that must block deletion.
+    """
+    home = Path(os.path.abspath(home))
+    path = Path(os.path.abspath(path))
+    try:
+        relative = path.relative_to(home)
+    except ValueError:
+        return True
+
+    current = home
+    if current.is_symlink():
+        return True
+    for component in relative.parts:
+        current /= component
+        if current.is_symlink():
+            return True
+    return False
 
 
 def ledger_key(target: str, name: str) -> str:
@@ -802,6 +835,10 @@ def find_prune_candidates(
         target, _, name = key.partition(":")
         if target in composed.disabled_targets:
             continue  # disabled targets are ignored entirely, never pruned
+        if target not in VALID_TARGETS and target not in LEGACY_MIGRATION_TARGET_RELATIVE:
+            continue  # unknown targets have no migration filesystem root
+        if not isinstance(entry, dict):
+            continue  # malformed ledger entries cannot authorize filesystem cleanup
         candidates.append((target, name, entry))
     return candidates
 
@@ -1098,30 +1135,6 @@ def _opencode_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
             ))
     return observed, issues
 
-def _claude_runtime(home: Path) -> tuple[list[ObservedSkill], list[dict]]:
-    root = home / ".claude"
-    settings = _read_json_file(root / "settings.json")
-    enabled = _configured_plugins(settings.get("enabledPlugins"))
-    registry = _read_json_file(root / "plugins" / "installed_plugins.json").get("plugins", {})
-    observed: list[ObservedSkill] = []
-    issues: list[dict] = []
-    for provider, is_enabled in sorted(enabled.items()):
-        paths = _plugin_paths(registry.get(provider), home, root / "plugins") if isinstance(registry, dict) else []
-        if not paths:
-            paths = [root / "plugins" / provider]
-        found = False
-        for path in paths:
-            if path.is_dir():
-                found = True
-                observed.extend(_skill_observations(path, provider=provider, adapter="claude",
-                                                    enabled=is_enabled,
-                                                    state="active" if is_enabled else "disabled"))
-        if is_enabled and not found:
-            issues.append({"adapter": "claude", "provider": provider, "state": "missing-active-install"})
-    return observed, issues
-
-
-
 def _codex_marketplace_install_paths(home: Path, root: Path, config: dict, provider: str) -> list[Path]:
     """Resolve a current Codex marketplace install from its configured source.
 
@@ -1244,7 +1257,7 @@ def collect_runtime_inventory(
     home = Path(home)
     observed: list[ObservedSkill] = []
     issues: list[dict] = []
-    for target, adapter in (("native", _claude_runtime), ("codex", _codex_runtime),
+    for target, adapter in (("codex", _codex_runtime),
                             (None, _opencode_runtime), ("pi", _pi_runtime)):
         if target in disabled_targets:
             continue
@@ -1477,6 +1490,11 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     )
     composed = compose_profile(args.profile, base, overlay)
     target_roots = resolve_target_roots(args.home, args.target_overrides)
+    migration_target_roots = dict(target_roots)
+    for target, relative in LEGACY_MIGRATION_TARGET_RELATIVE.items():
+        root = Path(args.home).joinpath(*relative)
+        assert_target_root_allowed(target, root)
+        migration_target_roots[target] = root
     ledger = load_ledger(args.state_root)
 
     adopted: list[SyncState] = []
@@ -1514,16 +1532,55 @@ def cmd_migrate(args: argparse.Namespace) -> int:
             unsafe_reason = _skill_name_unsafe_reason(name)
             if unsafe_reason:
                 raise SkillError(f"refusing unsafe skill name {name!r} in ledger prune candidate ({unsafe_reason})")
-            dest = target_roots[target] / name
+            dest = migration_target_roots[target] / name
+            if target in LEGACY_MIGRATION_TARGET_RELATIVE and _has_symlink_component(args.home, dest):
+                blocked_prune.append((target, name))
+                continue
             if not dest.exists():
-                if args.apply:
+                if target in LEGACY_MIGRATION_TARGET_RELATIVE:
+                    # A past explicit native target-root override cannot be
+                    # reconstructed from the ledger key. Preserve it as
+                    # unresolved rather than assuming the default path owns it.
+                    blocked_prune.append((target, name))
+                elif args.apply:
                     del ledger["targets"][ledger_key(target, name)]
                 continue
             stamp = read_owner_stamp(dest)
-            dest_hash = tree_hash(dest)
-            if stamp and stamp.get("generated_hash") == entry.get("generated_hash") and dest_hash == entry.get("target_hash"):
+            stamp_matches_ledger = (
+                stamp is not None
+                and isinstance(entry.get("owner"), str)
+                and entry.get("owner") in VALID_OWNERS
+                and isinstance(entry.get("source"), str)
+                and bool(entry["source"])
+                and isinstance(entry.get("transform"), str)
+                and entry.get("transform") in VALID_TRANSFORMS
+                and _is_tree_hash(stamp.get("generated_hash"))
+                and _is_tree_hash(entry.get("generated_hash"))
+                and stamp.get("generated_hash") == entry.get("generated_hash")
+                and all(stamp.get(key) == entry.get(key)
+                        for key in ("owner", "source", "transform"))
+            )
+            target_hash = entry.get("target_hash")
+            target_hash_well_formed = _is_tree_hash(target_hash)
+            try:
+                dest_hash = tree_hash(dest)
+            except (OSError, SkillError):
+                blocked_prune.append((target, name))
+                continue
+            content_matches_ledger = (
+                target_hash_well_formed
+                and _is_tree_hash(dest_hash)
+                and stamp_matches_ledger
+                and stamp.get("generated_hash") == target_hash
+                and dest_hash == target_hash
+            )
+            if stamp_matches_ledger and content_matches_ledger:
                 pruned.append((target, name))
                 if args.apply:
+                    if target in LEGACY_MIGRATION_TARGET_RELATIVE and _has_symlink_component(args.home, dest):
+                        blocked_prune.append((target, name))
+                        pruned.pop()
+                        continue
                     shutil.rmtree(dest)
                     del ledger["targets"][ledger_key(target, name)]
             else:

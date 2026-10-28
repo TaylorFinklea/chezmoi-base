@@ -6,8 +6,8 @@ from .conftest import make_base_repo, make_personal_repo
 
 
 def _setup(tmp_path):
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native"])
-    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["codex"])
     home = tmp_path / "home"
     state_root = tmp_path / "state"
     return base, personal, home, state_root
@@ -23,16 +23,16 @@ def test_sync_missing_ledger_creates_target_cleanly(ss, tmp_path):
     base, personal, home, state_root = _setup(tmp_path)
     rc = _run(ss, "sync", base, personal, home, state_root)
     assert rc == 0
-    assert (home / ".claude" / "skills" / "alpha" / "SKILL.md").exists()
+    assert (home / ".codex" / "skills" / "alpha" / "SKILL.md").exists()
     ledger = json.loads((state_root / "ledger.json").read_text())
-    assert "native:alpha" in ledger["targets"]
-    assert (home / ".claude" / "skills" / "alpha" / ".skillsync-owner.json").exists()
+    assert "codex:alpha" in ledger["targets"]
+    assert (home / ".codex" / "skills" / "alpha" / ".skillsync-owner.json").exists()
 
 
 def test_sync_is_idempotent_when_clean(ss, tmp_path):
     base, personal, home, state_root = _setup(tmp_path)
     assert _run(ss, "sync", base, personal, home, state_root) == 0
-    dest = home / ".claude" / "skills" / "alpha"
+    dest = home / ".codex" / "skills" / "alpha"
     mtime_before = (dest / "SKILL.md").stat().st_mtime_ns
     assert _run(ss, "sync", base, personal, home, state_root) == 0
     # clean state: nothing rewritten
@@ -46,14 +46,14 @@ def test_sync_source_only_update_rewrites_target(ss, tmp_path):
     skill_md.write_text(skill_md.read_text() + "extra line\n")
     rc = _run(ss, "sync", base, personal, home, state_root)
     assert rc == 0
-    dest_text = (home / ".claude" / "skills" / "alpha" / "SKILL.md").read_text()
+    dest_text = (home / ".codex" / "skills" / "alpha" / "SKILL.md").read_text()
     assert "extra line" in dest_text
 
 
 def test_sync_target_only_drift_is_reported_and_left_untouched(ss, tmp_path):
     base, personal, home, state_root = _setup(tmp_path)
     assert _run(ss, "sync", base, personal, home, state_root) == 0
-    dest_md = home / ".claude" / "skills" / "alpha" / "SKILL.md"
+    dest_md = home / ".codex" / "skills" / "alpha" / "SKILL.md"
     hand_edited = dest_md.read_text() + "HAND EDITED\n"
     dest_md.write_text(hand_edited)
     rc = _run(ss, "sync", base, personal, home, state_root)
@@ -64,7 +64,7 @@ def test_sync_target_only_drift_is_reported_and_left_untouched(ss, tmp_path):
 def test_sync_two_sided_conflict_is_reported_and_left_untouched(ss, tmp_path):
     base, personal, home, state_root = _setup(tmp_path)
     assert _run(ss, "sync", base, personal, home, state_root) == 0
-    dest_md = home / ".claude" / "skills" / "alpha" / "SKILL.md"
+    dest_md = home / ".codex" / "skills" / "alpha" / "SKILL.md"
     hand_edited = dest_md.read_text() + "HAND EDITED\n"
     dest_md.write_text(hand_edited)
     src_md = base / ".skills-src" / "skills" / "alpha" / "SKILL.md"
@@ -76,14 +76,14 @@ def test_sync_two_sided_conflict_is_reported_and_left_untouched(ss, tmp_path):
 
 def test_sync_reports_unmanaged_existing_dir_without_overwriting(ss, tmp_path):
     base, personal, home, state_root = _setup(tmp_path)
-    unmanaged_dir = home / ".claude" / "skills" / "alpha"
+    unmanaged_dir = home / ".codex" / "skills" / "alpha"
     unmanaged_dir.mkdir(parents=True)
     (unmanaged_dir / "SKILL.md").write_text("hand-installed, never synced\n")
     rc = _run(ss, "sync", base, personal, home, state_root)
     assert rc == 1
     assert (unmanaged_dir / "SKILL.md").read_text() == "hand-installed, never synced\n"
     ledger = json.loads((state_root / "ledger.json").read_text())
-    assert "native:alpha" not in ledger["targets"]
+    assert "codex:alpha" not in ledger["targets"]
 
 
 def test_atomic_replace_dir_failure_leaves_prior_target_intact(ss, tmp_path):
@@ -139,11 +139,11 @@ def test_compute_sync_states_rejects_bypassed_unsafe_name(ss, tmp_path):
         source_root=tmp_path / "src", catalog_path=tmp_path / ".skillcatalog.toml",
         repo_relative_source_root="src", skills=(), external_source=False,
     )
-    record = ss.SkillRecord(name="../../evil", targets=("native",),
+    record = ss.SkillRecord(name="../../evil", targets=("codex",),
                              activation="automatic", upstream_ref="x", transform="standard")
     composed = ss.ComposedCatalog(profile="personal", base=catalog, overlay=catalog,
                                    skills={"../../evil": (catalog, record)})
-    target_roots = {"native": tmp_path / "home" / ".claude" / "skills"}
+    target_roots = {"codex": tmp_path / "home" / ".codex" / "skills"}
     ledger = {"schema": 1, "targets": {}}
     with pytest.raises(ss.SkillError, match="unsafe skill name"):
         ss.compute_sync_states(composed, target_roots, ledger, tmp_path / "stage")

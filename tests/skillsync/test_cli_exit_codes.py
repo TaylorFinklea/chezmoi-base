@@ -9,8 +9,8 @@ def _argv(cmd, base, personal, tmp_path, extra=()):
 
 
 def _fresh(tmp_path, suffix=""):
-    base = make_base_repo(tmp_path / f"b{suffix}", skill_names=["alpha"], targets=["native"])
-    personal = make_personal_repo(tmp_path / f"p{suffix}", skill_names=["pskill"], targets=["native"])
+    base = make_base_repo(tmp_path / f"b{suffix}", skill_names=["alpha"], targets=["codex"])
+    personal = make_personal_repo(tmp_path / f"p{suffix}", skill_names=["pskill"], targets=["codex"])
     return base, personal
 
 
@@ -20,7 +20,7 @@ def test_lock_zero_clean_two_invalid(ss, tmp_path):
     dup_base, _dup_personal = _fresh(tmp_path, "2")
     from .conftest import build_repo
     dup2 = build_repo(tmp_path / "dup2", owner="personal-managed", roles=["personal"], skill_names=["alpha"],
-                       targets=["native"])
+                       targets=["codex"])
     assert ss.main(_argv("lock", dup_base, dup2, tmp_path / "2", extra=["--all"])) == 2
 
 
@@ -36,7 +36,7 @@ def test_check_zero_one_two(ss, tmp_path):
     base2, personal2 = _fresh(tmp_path, "2")
     from .conftest import write_catalog_toml
     write_catalog_toml(personal2, owner="personal-managed", roles=["personal"], source_root=".skills-src/skills",
-                        records=[{"name": "alpha", "targets": ["native"]}])
+                        records=[{"name": "alpha", "targets": ["codex"]}])
     from .conftest import write_skill
     write_skill(personal2 / ".skills-src" / "skills", "alpha")
     assert ss.main(_argv("check", base2, personal2, tmp_path / "2")) == 2  # 2 invalid (collision)
@@ -60,7 +60,7 @@ def test_sync_zero_and_one(ss, tmp_path):
     assert ss.main(_argv("sync", base, personal, tmp_path / "1")) == 0  # 0: clean create
     assert ss.main(_argv("sync", base, personal, tmp_path / "1")) == 0  # 0: idempotent clean
 
-    dest_md = tmp_path / "1" / "home" / ".claude" / "skills" / "alpha" / "SKILL.md"
+    dest_md = tmp_path / "1" / "home" / ".codex" / "skills" / "alpha" / "SKILL.md"
     dest_md.write_text(dest_md.read_text() + "hand edit\n")
     assert ss.main(_argv("sync", base, personal, tmp_path / "1")) == 1  # 1: conflict reported
 
@@ -75,7 +75,7 @@ def test_migrate_zero_one_and_two(ss, tmp_path):
     base, personal = _fresh(tmp_path, "1")
     assert ss.main(_argv("migrate", base, personal, tmp_path / "1", extra=["--apply"])) == 0  # 0: nothing to do
 
-    dest = tmp_path / "1" / "home" / ".claude" / "skills" / "alpha"
+    dest = tmp_path / "1" / "home" / ".codex" / "skills" / "alpha"
     dest.mkdir(parents=True)
     (dest / "SKILL.md").write_text("hand-installed, does not match source\n")
     assert ss.main(_argv("migrate", base, personal, tmp_path / "1")) == 1  # 1: dry-run reports a refusal

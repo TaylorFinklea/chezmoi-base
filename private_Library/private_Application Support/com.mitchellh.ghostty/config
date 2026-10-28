@@ -36,6 +36,6 @@ keybind = cmd+down=csi:57420;9u
 keybind = cmd+page_up=csi:57421;9u
 keybind = cmd+page_down=csi:57422;9u
 
-# Notifications from claude and codex
+# Notifications from Codex
 desktop-notifications = true
 bell-features = system,attention,title,border

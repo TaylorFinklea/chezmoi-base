@@ -49,8 +49,8 @@ def test_stage_projection_codex_is_deterministic(ss, tmp_path):
     assert ss.tree_hash(staged_a) == ss.tree_hash(staged_b)
 
 
-def test_stage_projection_native_is_verbatim_copy(ss, tmp_path):
+def test_standard_projection_is_verbatim_copy(ss, tmp_path):
     src = write_skill(tmp_path / "src", "foo", extra_frontmatter={"allowed-tools": "[Bash]"})
-    staged = ss.stage_projection(src, "native", "standard", tmp_path / "stage")
+    staged = ss.stage_projection(src, "pi", "standard", tmp_path / "stage")
     meta, _ = ss.split_frontmatter((staged / "SKILL.md").read_text())
     assert meta["allowed-tools"] == ["Bash"]  # untouched, unlike codex reduction

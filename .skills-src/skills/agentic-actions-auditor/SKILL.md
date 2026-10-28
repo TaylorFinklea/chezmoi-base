@@ -1,6 +1,6 @@
 ---
 name: agentic-actions-auditor
-description: "Audits GitHub Actions workflows for security vulnerabilities in AI agent integrations including Claude Code Action, OpenAI Codex, and GitHub AI Inference. Detects attack vectors where attacker-controlled input reaches AI agents running in CI/CD pipelines, including env var intermediary patterns, direct expression injection, dangerous sandbox configurations, and wildcard user allowlists. Use when reviewing workflow files that invoke AI coding agents, auditing CI/CD pipeline security for prompt injection risks, or evaluating agentic action configurations."
+description: "Audits GitHub Actions workflows for security vulnerabilities in AI agent integrations including OpenAI Codex and GitHub AI Inference. Detects attack vectors where attacker-controlled input reaches AI agents running in CI/CD pipelines, including env var intermediary patterns, direct expression injection, dangerous sandbox configurations, and wildcard user allowlists. Use when reviewing workflow files that invoke AI coding agents, auditing CI/CD pipeline security for prompt injection risks, or evaluating agentic action configurations."
 allowed-tools:
   - Read
   - Grep
@@ -15,7 +15,7 @@ Static security analysis guidance for GitHub Actions workflows that invoke AI co
 ## When to Use
 
 - Auditing a repository's GitHub Actions workflows for AI agent security
-- Reviewing CI/CD configurations that invoke Claude Code Action or OpenAI Codex
+- Reviewing CI/CD configurations that invoke OpenAI Codex or GitHub AI Inference
 - Checking whether attacker-controlled input can reach AI agent prompts
 - Evaluating agentic action configurations (sandbox settings, tool permissions, user allowlists)
 - Assessing trigger events that expose workflows to external input (`pull_request_target`, `issue_comment`, etc.)
@@ -131,7 +131,6 @@ For each workflow file, examine every job and every step within each job. Check 
 
 | Action Reference | Action Type |
 |-----------------|-------------|
-| `anthropics/claude-code-action` | Claude Code Action |
 | `openai/codex-action` | OpenAI Codex |
 | `actions/ai-inference` | GitHub AI Inference |
 
@@ -168,14 +167,6 @@ For each identified AI action step, capture the following security-relevant info
 #### 3a. Step-Level Configuration (from `with:` block)
 
 Capture these security-relevant input fields based on the action type:
-
-**Claude Code Action:**
-- `prompt` -- the instruction sent to the AI agent
-- `claude_args` -- CLI arguments passed to Claude (may contain `--allowedTools`, `--disallowedTools`)
-- `allowed_non_write_users` -- which users can trigger the action (wildcard `"*"` is a red flag)
-- `allowed_bots` -- which bots can trigger the action
-- `settings` -- path to Claude settings file (may configure tool permissions)
-- `trigger_phrase` -- custom phrase to activate the action in comments
 
 **OpenAI Codex:**
 - `prompt` -- the instruction sent to the AI agent
@@ -215,7 +206,7 @@ For the entire workflow containing the AI action step, also capture:
 
 After scanning all workflows, produce a summary:
 
-"Found N AI action instances across M workflow files: X Claude Code Action, Z OpenAI Codex, W GitHub AI Inference"
+"Found N AI action instances across M workflow files: X OpenAI Codex, Y GitHub AI Inference"
 
 Include the security context captured for each instance in the detailed output.
 
@@ -235,7 +226,7 @@ Then check each vector against the security context captured in Step 3:
 | F | Subshell Expansion | Tool restriction list includes commands supporting `$()` expansion | [{baseDir}/references/vector-f-subshell-expansion.md]({baseDir}/references/vector-f-subshell-expansion.md) |
 | G | Eval of AI Output | `eval`, `exec`, or `$()` in `run:` step consuming `steps.*.outputs.*` | [{baseDir}/references/vector-g-eval-of-ai-output.md]({baseDir}/references/vector-g-eval-of-ai-output.md) |
 | H | Dangerous Sandbox Configs | `danger-full-access`, `Bash(*)`, `--yolo`, `safety-strategy: unsafe` | [{baseDir}/references/vector-h-dangerous-sandbox-configs.md]({baseDir}/references/vector-h-dangerous-sandbox-configs.md) |
-| I | Wildcard Allowlists | `allowed_non_write_users: "*"`, `allow-users: "*"` | [{baseDir}/references/vector-i-wildcard-allowlists.md]({baseDir}/references/vector-i-wildcard-allowlists.md) |
+| I | Wildcard Allowlists | `allow-users: "*"`, `allow-bots: "*"` | [{baseDir}/references/vector-i-wildcard-allowlists.md]({baseDir}/references/vector-i-wildcard-allowlists.md) |
 
 For each vector, read the referenced file and apply its detection heuristic against the security context captured in Step 3. For each finding, record: the vector letter and name, the specific evidence from the workflow, the data flow path from attacker input to AI agent, and the affected workflow file and step.
 
@@ -276,7 +267,7 @@ Each finding includes a numbered data flow trace. Follow these rules:
 1. **Start from the attacker-controlled source** -- the GitHub event context where the attacker acts (e.g., "Attacker creates an issue with malicious content in the body"), not a YAML line.
 2. **Show every intermediate hop** -- env blocks, step outputs, runtime fetches, file reads. Include YAML line references where applicable.
 3. **Annotate runtime boundaries** -- when a step occurs at runtime rather than YAML parse time, add a note: "> Note: Step N occurs at runtime -- not visible in static YAML analysis."
-4. **Name the specific consequence** in the final step (e.g., "Claude executes with tainted prompt -- attacker achieves arbitrary code execution"), not just the YAML element.
+4. **Name the specific consequence** in the final step (e.g., "The agent executes with tainted prompt -- attacker achieves arbitrary code execution"), not just the YAML element.
 
 For Vectors H and I (configuration findings), replace the data flow section with an impact amplification note explaining what the configuration weakness enables if a co-occurring injection vector is present.
 

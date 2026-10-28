@@ -1,1 +1,1 @@
-{"packages": [{"id": "pi@fixture", "path": "packages/pi"}], "extensions": [{"id": "pi-extension@fixture", "path": "extensions/pi-extension"}]}
+{"packages": [{"id": "pi@fixture", "path": "packages/pi"}, {"id": "alpha@fixture", "path": "packages/alpha"}, {"id": "beta@fixture", "path": "packages/beta"}], "extensions": [{"id": "pi-extension@fixture", "path": "extensions/pi-extension"}]}

@@ -15,10 +15,10 @@ def _run(ss, cmd, base, personal, tmp_path, extra=()):
 
 def _setup(tmp_path, disabled_targets=("pi",)):
     # "pionly" has only the disabled target; "alpha" mixes enabled and disabled.
-    base = make_base_repo(tmp_path, skill_names=["alpha", "pionly"], targets=["native", "pi"])
+    base = make_base_repo(tmp_path, skill_names=["alpha", "pionly"], targets=["codex", "pi"])
     write_catalog_toml(base, owner="base-managed", roles=["personal", "work"], source_root=".skills-src/skills",
-                       records=[{"name": "alpha", "targets": ["native", "pi"]}, {"name": "pionly", "targets": ["pi"]}])
-    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["native", "pi"],
+                       records=[{"name": "alpha", "targets": ["codex", "pi"]}, {"name": "pionly", "targets": ["pi"]}])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["codex", "pi"],
                                   disabled_targets=list(disabled_targets) if disabled_targets is not None else None)
     return base, personal
 
@@ -27,11 +27,11 @@ def test_sync_skips_disabled_target_for_base_and_overlay_skills(ss, tmp_path):
     base, personal = _setup(tmp_path)
     assert _run(ss, "sync", base, personal, tmp_path) == 0
     home = tmp_path / "home"
-    assert (home / ".claude" / "skills" / "alpha" / "SKILL.md").exists()
-    assert (home / ".claude" / "skills" / "pskill" / "SKILL.md").exists()
+    assert (home / ".codex" / "skills" / "alpha" / "SKILL.md").exists()
+    assert (home / ".codex" / "skills" / "pskill" / "SKILL.md").exists()
     assert not (home / ".pi").exists()
     ledger = json.loads((tmp_path / "state" / "ledger.json").read_text())
-    assert sorted(ledger["targets"]) == ["native:alpha", "native:pskill"]
+    assert sorted(ledger["targets"]) == ["codex:alpha", "codex:pskill"]
 
 
 def test_diff_ignores_disabled_target(ss, tmp_path):
@@ -45,7 +45,7 @@ def test_check_is_clean_with_disabled_target_and_lock_is_profile_independent(ss,
     assert _run(ss, "lock", base, personal, tmp_path, extra=("--all",)) == 0
     lock = json.loads((base / ".skillcatalog.lock.json").read_text())
     assert lock["skills"]["pionly"]["targets"] == ["pi"]
-    assert lock["skills"]["alpha"]["targets"] == ["native", "pi"]
+    assert lock["skills"]["alpha"]["targets"] == ["codex", "pi"]
     assert _run(ss, "check", base, personal, tmp_path) == 0
 
 
@@ -76,6 +76,27 @@ def test_without_key_behavior_is_unchanged(ss, tmp_path):
     pi_root = tmp_path / "home" / ".pi" / "agent" / "skills"
     assert sorted(p.name for p in pi_root.iterdir()) == ["alpha", "pionly", "pskill"]
     assert ss.load_catalog(personal / ".skillcatalog.toml").disabled_targets == frozenset()
+
+
+@pytest.mark.parametrize("owner", ["base", "overlay"])
+def test_retired_native_target_is_rejected(ss, tmp_path, owner):
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"], targets=["codex"])
+    catalog = base if owner == "base" else personal
+    records = [{"name": "alpha" if owner == "base" else "pskill", "targets": ["native"]}]
+    write_catalog_toml(
+        catalog,
+        owner="base-managed" if owner == "base" else "personal-managed",
+        roles=["personal", "work"] if owner == "base" else ["personal"],
+        source_root=".skills-src/skills",
+        records=records,
+    )
+
+    with pytest.raises(ss.SkillError, match="targets"):
+        ss.load_catalog(catalog / ".skillcatalog.toml")
+    assert _run(ss, "check", base, personal, tmp_path) == 2
+    assert _run(ss, "sync", base, personal, tmp_path) == 2
+    assert not (tmp_path / "home").exists()
 
 
 @pytest.mark.parametrize("value", [["bogus"], "pi", [1], ["pi", "nope"]])
@@ -109,9 +130,9 @@ def test_runtime_inventory_skips_adapter_for_disabled_target(ss):
 
 def test_audit_omits_skill_whose_targets_are_all_disabled(ss, tmp_path, capsys):
     base, personal = _setup(tmp_path)
-    stray = tmp_path / "home" / ".claude" / "skills" / "pionly"
+    stray = tmp_path / "home" / ".codex" / "skills" / "pionly"
     stray.mkdir(parents=True)
     assert _run(ss, "audit", base, personal, tmp_path, extra=("--format", "json")) == 0
     report = json.loads(capsys.readouterr().out)
     assert sorted(e["name"] for e in report["manual"]) == ["alpha", "pskill"]
-    assert report["unmanaged"] == [{"name": "pionly", "origin": "unmanaged", "target": "native"}]
+    assert report["unmanaged"] == [{"name": "pionly", "origin": "unmanaged", "target": "codex"}]

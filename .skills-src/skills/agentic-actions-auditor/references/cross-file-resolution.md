@@ -100,77 +100,7 @@ Analyze the resolved workflow YAML through existing Steps 2-4. Cross-file findin
 
 When an AI action is found inside a resolved file, trace the data flow from the caller's `with:` values through `inputs.*` to the AI prompt field. This extends the existing data flow trace pattern from foundations.md.
 
-### Composite Action Input Trace
-
-```
-Caller workflow (.github/workflows/review.yml):
-  steps:
-    - uses: ./actions/issue-triage
-      with:
-        issue_body: ${{ github.event.issue.body }}    # attacker-controlled
-
-Composite action (actions/issue-triage/action.yml):
-  inputs:
-    issue_body:
-      description: "The issue body text"
-  runs:
-    using: composite
-    steps:
-      - uses: anthropics/claude-code-action@v1
-        with:
-          prompt: "Triage this issue: ${{ inputs.issue_body }}"
-```
-
-**Data flow trace:**
-```
-1. Attacker creates issue with malicious content in body
-2. Caller: with.issue_body = ${{ github.event.issue.body }}
-   -> .github/workflows/review.yml, jobs.triage.steps[1]
-3. Composite action receives: inputs.issue_body = attacker content
-   -> actions/issue-triage/action.yml, inputs.issue_body
-4. AI action: prompt contains ${{ inputs.issue_body }}
-   -> actions/issue-triage/action.yml, runs.steps[0]
-5. Claude executes with tainted prompt -- attacker achieves prompt injection
-```
-
-### Reusable Workflow Input Trace
-
-```
-Caller workflow (.github/workflows/ci.yml):
-  jobs:
-    ai-review:
-      uses: org/shared/.github/workflows/ai-review.yml@main
-      with:
-        pr_body: ${{ github.event.pull_request.body }}
-
-Called workflow (org/shared/.github/workflows/ai-review.yml):
-  on:
-    workflow_call:
-      inputs:
-        pr_body:
-          type: string
-  jobs:
-    review:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: anthropics/claude-code-action@v1
-          with:
-            prompt: "Review this PR: ${{ inputs.pr_body }}"
-```
-
-**Data flow trace:**
-```
-1. Attacker opens PR with malicious content in body
-2. Caller: with.pr_body = ${{ github.event.pull_request.body }}
-   -> .github/workflows/ci.yml, jobs.ai-review
-3. Reusable workflow receives: inputs.pr_body = attacker content
-   -> org/shared/.github/workflows/ai-review.yml, on.workflow_call.inputs
-4. AI action: prompt contains ${{ inputs.pr_body }}
-   -> org/shared/.github/workflows/ai-review.yml, jobs.review.steps[0]
-5. Claude executes with tainted prompt via pull_request_target (has secrets access)
-```
-
-The trace format follows the same stacked multi-line style as other data flow traces in this skill. Each hop shows the relevant YAML location. Cross-file findings have a longer trace because they span multiple files, but are otherwise identical to direct findings.
+For either a composite action or reusable workflow, trace each input from the caller's `with:` value through the receiving input to the AI action's prompt field. Use the same stacked multi-line format as other data flow traces in this skill. Each hop shows the relevant YAML location. Cross-file findings have a longer trace because they span multiple files, but are otherwise identical to direct findings.
 
 ## Depth Limit and Unresolved References
 

@@ -178,7 +178,7 @@ sync_decisions=()
 
 is_runtime_skip() {
   case "$1" in
-    .claude/settings.json|.codex/config.toml) return 0 ;;
+    .codex/config.toml) return 0 ;;
   esac
   return 1
 }

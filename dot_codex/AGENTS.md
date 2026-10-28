@@ -116,17 +116,15 @@ return to the original worker, staying with Luna unless execution has already
 escalated to Sol.
 
 Every non-trivial change gets two read-only reviews before it is committed or
-reported done: `reviewer` (Sol) and a different-family Claude Opus 5.5 review.
-Trivial means typos, comments, or edits with no behavior change. The user
-approves sending the diff and relevant context under review to Claude Opus 5.5
-for that review. Run it read-only, with the diff in the request:
-`claude -p "<review request>" --model opus --effort medium --tools "Read,Grep,Glob"`
-(keep the request first: `--tools` takes a list).
-On work machines, Claude models come through GitHub Copilot CLI instead: run the
-same review with `copilot -p` on its Claude Opus 5.5 model, allowing only
-read-only tools. Add `Reviewed-by: gpt-6.1-sol` and
-`Reviewed-by: claude-opus-5-5` trailers to the commit. Keep `planner` (Sol) as a
-compatibility role; the main lead should not routinely spawn another planner.
+reported done: `reviewer` (Sol) and an adversarial review through Ollama using
+one of these approved models: DeepSeek V4.1 Flash, MiniMax M3.1 Flash, or GLM
+5.3 Flash. If the selected Ollama tag is `:cloud`, obtain current-session user
+authorization before sending the diff to hosted inference. Redact credentials
+and secrets before sharing. Send the actual diff for a direct text-only review;
+do not enable tools or a tool-using harness. Keep the review read-only. Add
+`Reviewed-by: gpt-6.1-sol` and `Reviewed-by: ollama-<model>` trailers to the
+commit, using the reviewed model name in the second trailer. Keep `planner` (Sol)
+as a compatibility role; the main lead should not routinely spawn another planner.
 Require actual diff/source/test evidence and concise worker and reviewer
 reports. A missing, failed, or timed-out review is not a pass. If native
 delegation or a required review is unavailable, report blocked delegation or

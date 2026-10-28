@@ -597,7 +597,7 @@ if ! grep -Fqx "managed:$tmp/base" "$call_log"; then
 fi
 
 # --- sync classifier ---
-printf ' M fresh/clean/.zshrc\nM  .stale-state\nMM .claude/settings.json\n' > "$tmp/personal/fake-status.txt"
+printf ' M fresh/clean/.zshrc\nM  .stale-state\nMM .codex/config.toml\n' > "$tmp/personal/fake-status.txt"
 : > "$call_log"
 if ! run_compose sync personal --no-pull; then
   fail 'sync should succeed when drift is clean or skippable'
@@ -608,7 +608,7 @@ fi
 if grep -F "apply-args" "$call_log" | grep -Fq '.stale-state'; then
   fail 'stale-state-only file should not be applied'
 fi
-if grep -F "apply-args" "$call_log" | grep -Fq '.claude/settings.json'; then
+if grep -F "apply-args" "$call_log" | grep -Fq '.codex/config.toml'; then
   fail 'runtime skip-list file should never be applied'
 fi
 

@@ -63,7 +63,7 @@ def build_repo(repo_root: Path, *, owner: str, roles: list[str], skill_names: li
                 source_root: str = ".skills-src/skills", targets: list[str] | None = None,
                 description: str = "does a thing", disabled_targets: list | None = None) -> Path:
     """Create a full catalog repo: <repo_root>/.skillcatalog.toml + <repo_root>/<source_root>/<name>/SKILL.md."""
-    targets = targets if targets is not None else ["native", "codex", "pi"]
+    targets = targets if targets is not None else ["codex", "pi"]
     src_dir = repo_root / source_root
     records = []
     for name in skill_names:
@@ -80,7 +80,7 @@ def make_base_repo(tmp_path: Path, skill_names: list[str] = ("alpha",), **kw) ->
 
 
 def make_personal_repo(tmp_path: Path, skill_names: list[str] = ("pskill",), **kw) -> Path:
-    kw.setdefault("targets", ["native", "codex", "pi", "hermes"])
+    kw.setdefault("targets", ["codex", "pi", "hermes"])
     return build_repo(tmp_path / "personal", owner="personal-managed", roles=["personal"],
                        skill_names=list(skill_names), **kw)
 
@@ -90,7 +90,7 @@ def make_work_repo(tmp_path: Path, skill_names: list[str] = ("wskill",), *, exte
     """A work-managed catalog repo. `source_root` is a small relative marker
     resolved against an external --work-root, never an absolute/private path."""
     repo_root = tmp_path / "work"
-    kw.setdefault("targets", ["native", "codex", "pi"])
+    kw.setdefault("targets", ["codex", "pi"])
     source_root = kw.pop("source_root", "skills")
     records = [{"name": name, "targets": kw["targets"]} for name in skill_names]
     write_catalog_toml(repo_root, owner="work-managed", roles=["work"], source_root=source_root, records=records)

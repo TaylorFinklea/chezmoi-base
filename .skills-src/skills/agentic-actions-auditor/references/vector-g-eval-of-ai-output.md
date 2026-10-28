@@ -9,7 +9,6 @@ This vector applies to any AI action whose output is consumed by subsequent `run
 | Action | Applicable | Notes |
 |--------|-----------|-------|
 | GitHub AI Inference | Primary concern | Most commonly used with structured output parsing in subsequent steps; outputs via `steps.<id>.outputs.response` |
-| Claude Code Action | Applicable if output captured | Primarily operates on codebase directly, but output can be captured in subsequent steps |
 | OpenAI Codex | Applicable if output captured | Primarily operates on codebase directly, but output can be captured in subsequent steps |
 
 ## Trigger Events

@@ -6,7 +6,6 @@ The prompt instructs the AI agent to fetch attacker-controlled content at runtim
 
 | Action | Applicable | Notes |
 |--------|-----------|-------|
-| Claude Code Action | Yes | Confirmed -- uses `gh` CLI via Bash tool to fetch issue/PR content |
 | OpenAI Codex | Yes | Can execute `gh` commands if sandbox allows shell access |
 | GitHub AI Inference | No | No shell access -- cannot execute CLI commands at runtime |
 
@@ -45,32 +44,6 @@ The data never passes through YAML expressions or env vars. The prompt may inter
 ## Why It Matters
 
 This vector is invisible to static YAML analysis because the attacker-controlled data is not present in the workflow file at all. The prompt looks clean -- no `${{ }}` expressions referencing attacker contexts, no env vars carrying attacker data. But the AI agent is instructed to fetch and process attacker-controlled content at runtime. The distinction between a safe integer (issue number) in the prompt and dangerous content (issue body) returned by the CLI command is subtle and easily overlooked.
-
-## Example: Vulnerable Pattern
-
-```yaml
-on:
-  issues:
-    types: [opened, edited]
-
-jobs:
-  triage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: anthropics/claude-code-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          prompt: |
-            TOOLS:
-            - `gh issue view NUMBER`: Read the issue title, body, and labels
-
-            TASK:
-            1. Run `gh issue view ${{ github.event.issue.number }}` to read the issue details.
-            2. Analyze the issue and suggest appropriate labels.
-            # The issue NUMBER is safe to interpolate (integer)
-            # But gh issue view returns the FULL issue body, which IS attacker-controlled
-```
 
 **Data flow:** `github.event.issue.body` (stored in GitHub) -> `gh issue view` (runtime fetch by AI) -> AI reads command output containing attacker content -> attacker content in AI context.
 

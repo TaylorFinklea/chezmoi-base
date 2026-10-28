@@ -3,21 +3,21 @@
   "schema": 1,
   "skills": {
     "agentic-actions-auditor": {
-      "description": "Audits GitHub Actions workflows for security vulnerabilities in AI agent integrations including Claude Code Action, OpenAI Codex, and GitHub AI Inference. Detects attack vectors where attacker-controlled input reaches AI agents running in CI/CD pipelines, including env var intermediary patterns, direct expression injection, dangerous sandbox configurations, and wildcard user allowlists. Use when reviewing workflow files that invoke AI coding agents, auditing CI/CD pipeline security for prompt injection risks, or evaluating agentic action configurations.",
+      "description": "Audits GitHub Actions workflows for security vulnerabilities in AI agent integrations including OpenAI Codex and GitHub AI Inference. Detects attack vectors where attacker-controlled input reaches AI agents running in CI/CD pipelines, including env var intermediary patterns, direct expression injection, dangerous sandbox configurations, and wildcard user allowlists. Use when reviewing workflow files that invoke AI coding agents, auditing CI/CD pipeline security for prompt injection risks, or evaluating agentic action configurations.",
       "name": "agentic-actions-auditor",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
       "transform": "standard",
-      "tree_hash": "sha256:e1002223d6dc0f6f8f31bad3f47ad2bfdee3525ef41d9bbe35f269b1a224d4fb"
+      "tree_hash": "sha256:0397f9025ef102a8e9280a32ed71a53fe08214fd6ca297f5da2b2e85e199b0dd"
     },
     "ask-questions-if-underspecified": {
       "description": "Clarify requirements before implementing. Use when serious doubts arise.",
       "name": "ask-questions-if-underspecified",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
@@ -28,9 +28,8 @@
       "description": "Provision, migrate, and run Bitwarden Secrets Manager project secrets. Use when a user asks to set up, migrate, repair, or use BWS secrets for a repository under ~/git.",
       "name": "bws-project-secrets",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
-        "native",
         "codex",
         "pi"
       ],
@@ -41,20 +40,19 @@
       "description": "Use when reconciling chezmoi drift in the dotfiles source repo \u2014 running chezmoi diff/apply/re-add, deciding source-vs-home direction, migrating a config surface across agents, or writing a commit/handoff claim about a config file. Carries the direction-decision logic and the hard-won gotchas (sister-config check, mktemp probing, verify-before-claiming, hidden PUA glyphs).",
       "name": "chezmoi-reconcile",
       "owner": "base-managed",
-      "source_commit": "131a35dc48fd3d2f20de88c1929a917c21522f76",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
-        "native",
         "codex",
         "pi"
       ],
       "transform": "standard",
-      "tree_hash": "sha256:8ce6769f6c28031dac0769999a2012dc7cb65c4016a4507bbb457b211ec74624"
+      "tree_hash": "sha256:d6955306fd2feba1951e0c24b4d1e1ef68a7a890d767e865af83825c324fcbd2"
     },
     "core-data-expert": {
       "description": "Expert Core Data guidance (iOS/macOS): stack setup, fetch requests & NSFetchedResultsController, saving/merge conflicts, threading & Swift Concurrency, batch operations & persistent history, migrations, performance, and NSPersistentCloudKitContainer/CloudKit sync.",
       "name": "core-data-expert",
       "owner": "base-managed",
-      "source_commit": "41f00f2780c07440a8358fdbfe9d3cd8402fc3bb",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
@@ -65,7 +63,7 @@
       "description": "Expert in FastAPI Python development with best practices for APIs and async operations",
       "name": "fastapi-python",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
@@ -76,18 +74,18 @@
       "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
       "name": "find-skills",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
       "transform": "standard",
-      "tree_hash": "sha256:2c6bc86067d423c8e4ae37b112110c308ca29a9fe7f5437cbb6864e76de6a18f"
+      "tree_hash": "sha256:6eb1074c04ec0337e13b09e601e2030d7fbdb17b0624c4c5dc7b40aab116248a"
     },
     "git-cleanup": {
       "description": "Safely analyzes and cleans up local git branches and worktrees by categorizing them as merged, squash-merged, superseded, or active work.",
       "name": "git-cleanup",
       "owner": "base-managed",
-      "source_commit": "41f00f2780c07440a8358fdbfe9d3cd8402fc3bb",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
@@ -98,7 +96,7 @@
       "description": "Detects fail-open insecure defaults (hardcoded secrets, weak auth, permissive security) that allow apps to run insecurely in production. Use when auditing security, reviewing config management, or analyzing environment variable handling.",
       "name": "insecure-defaults",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
@@ -109,20 +107,19 @@
       "description": "Install and configure shadcn/ui components for React projects. Guides component selection, installation order, dependency management, customisation with semantic tokens, and common UI recipes (forms, data tables, navigation, modals). Use after tailwind-theme-builder has set up the theme infrastructure, when adding components, building forms, creating data tables, or setting up navigation.",
       "name": "shadcn-ui",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],
       "transform": "standard",
-      "tree_hash": "sha256:a9e44d680e24499143396f998f487467de5c70988c69bbe0ce5d7760583770d7"
+      "tree_hash": "sha256:004ad6ace96d7782deb27bfb84a1903e9c2f58dfc8185c2ebb51f4dc05a66d44"
     },
     "swift-concurrency": {
       "description": "Diagnose data races, convert callback-based code to async/await, implement actor isolation patterns, resolve Sendable conformance issues, and guide Swift 6 migration. Use when developers mention: (1) Swift Concurrency, async/await, actors, or tasks, (2) \"use Swift Concurrency\" or \"modern concurrency patterns\", (3) migrating to Swift 6, (4) data races or thread safety issues, (5) refactoring closures to async/await, (6) @MainActor, Sendable, or actor isolation, (7) concurrent code architecture or performance optimization, (8) concurrency-related linter warnings (SwiftLint or similar; e.g. async_without_await, Sendable/actor isolation/MainActor lint).",
       "name": "swift-concurrency",
       "owner": "base-managed",
-      "source_commit": "41f00f2780c07440a8358fdbfe9d3cd8402fc3bb",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
-        "native",
         "pi"
       ],
       "transform": "standard",
@@ -132,9 +129,8 @@
       "description": "Expert guidance for Swift Testing: test structure, #expect/#require macros, traits and tags, parameterized tests, test plans, parallel execution, async waiting patterns, and XCTest migration. Use when writing new Swift tests, modernizing XCTest suites, debugging flaky tests, or improving test quality and maintainability in Apple-platform or Swift server projects.",
       "name": "swift-testing-expert",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
-        "native",
         "codex",
         "pi"
       ],
@@ -145,7 +141,7 @@
       "description": "Write, review, or improve SwiftUI code following best practices for state management, view composition, performance, macOS-specific APIs, and iOS 26+ Liquid Glass adoption. Use when building new SwiftUI features, refactoring existing views, reviewing code quality, or adopting modern SwiftUI patterns.",
       "name": "swiftui-expert-skill",
       "owner": "base-managed",
-      "source_commit": "e5fa2b940f4a68ce440dfd438686138531a91d01",
+      "source_commit": "709c07a346c12a7375fd0f8db2b2f93e44cf61d7",
       "targets": [
         "pi"
       ],

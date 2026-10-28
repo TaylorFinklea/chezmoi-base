@@ -26,7 +26,7 @@ def test_build_lock_records_tree_hash_and_provenance(ss, tmp_path):
     assert entry["tree_hash"] == ss.tree_hash(base / ".skills-src" / "skills" / "alpha")
     assert entry["description"] == "does a thing"
     assert entry["transform"] == "standard"
-    assert entry["targets"] == ["native", "codex", "pi"]
+    assert entry["targets"] == ["codex", "pi"]
 
 
 def test_build_lock_records_commit_hash_for_local_repo(ss, tmp_path, monkeypatch):
@@ -241,7 +241,7 @@ def test_cmd_lock_writes_both_repo_locks_and_refuses_cross_owner_duplicate(ss, t
 
     # now introduce a cross-owner duplicate name (fresh repo dir) and confirm lock refuses it
     dup_personal = build_repo(tmp_path / "personal-dup", owner="personal-managed", roles=["personal"],
-                               skill_names=["alpha"], targets=["native", "codex", "pi", "hermes"])
+                               skill_names=["alpha"], targets=["codex", "pi", "hermes"])
     rc2 = ss.main(["lock", "--profile", "personal", "--base-root", str(base),
                    "--overlay-root", str(dup_personal), "--home", str(tmp_path / "home"), "--all"])
     assert rc2 == 2

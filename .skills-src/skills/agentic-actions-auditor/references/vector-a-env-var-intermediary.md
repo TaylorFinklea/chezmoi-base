@@ -6,7 +6,6 @@ Attacker data flows from GitHub event context into `env:` blocks, and the AI pro
 
 | Action | Applicable | Notes |
 |--------|-----------|-------|
-| Claude Code Action | Yes | Prompt instructs AI to read env vars via `echo "$VAR"` |
 | OpenAI Codex | Yes | Similar env var reference pattern in prompt instructions |
 | GitHub AI Inference | Yes | Prompt text can reference env var names for the runner to resolve |
 
@@ -44,30 +43,6 @@ Both parts must be present. An env var with attacker content that is never refer
 ## Why It Matters
 
 This pattern is invisible to naive grep-based tools that only scan for `${{ }}` in prompt fields. GitHub's own security documentation recommends using env vars as an intermediary to prevent script injection in `run:` blocks -- but this recommendation does not account for AI agents that read env vars by name. An attacker's issue body, PR description, or comment text flows into the AI prompt without any visible expression injection.
-
-## Example: Vulnerable Pattern
-
-```yaml
-on:
-  issues:
-    types: [opened]
-
-jobs:
-  triage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: anthropics/claude-code-action@v1
-        env:
-          ISSUE_TITLE: '${{ github.event.issue.title }}'   # attacker-controlled
-          ISSUE_BODY: '${{ github.event.issue.body }}'      # attacker-controlled
-        with:
-          prompt: |
-            Read the issue title and body by running: echo "$ISSUE_TITLE" and echo "$ISSUE_BODY"
-            Review the issue and suggest appropriate labels.
-            # No ${{ }} here -- but attacker data still reaches the AI
-```
-
-**Data flow:** `github.event.issue.body` -> `env: ISSUE_BODY` -> prompt instruction `echo "$ISSUE_BODY"` -> Claude reads env var -> attacker content in AI context.
 
 ## False Positives
 

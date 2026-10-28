@@ -85,6 +85,5 @@ Authorization expires after that operation or when the conversation ends.
 Bare `chezmoi apply`, headless applies, unattended conflict resolution,
 and unapproved `--force` remain forbidden.
 
-Expected perpetual drift (skip-listed by sync): `.claude/settings.json` and
-`.codex/config.toml` are runtime-rewritten by their apps; anything beyond those
-two files is real.
+Expected perpetual drift (skip-listed by sync): `.codex/config.toml` is
+runtime-rewritten by the app; anything beyond that file is real.

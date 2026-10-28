@@ -43,22 +43,22 @@ def _rewrite_base_catalog(base, records):
 def test_check_reports_catalog_target_change_as_stale_lock(ss, tmp_path):
     """A catalog-only edit leaves source content untouched, so tree_hash still
     matches. The lock records `targets`, so check must still call it stale."""
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native", "codex"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
     personal = make_personal_repo(tmp_path, skill_names=["pskill"])
     assert _lock(ss, base, personal, "personal", tmp_path) == 0
     assert _check(ss, base, personal, "personal", tmp_path) == 0
 
-    _rewrite_base_catalog(base, [{"name": "alpha", "targets": ["native", "codex", "pi"]}])
+    _rewrite_base_catalog(base, [{"name": "alpha", "targets": ["codex", "pi"]}])
     assert _check(ss, base, personal, "personal", tmp_path) == 1
 
 
 def test_check_reports_catalog_transform_change_as_stale_lock(ss, tmp_path):
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native", "codex"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
     personal = make_personal_repo(tmp_path, skill_names=["pskill"])
     assert _lock(ss, base, personal, "personal", tmp_path) == 0
 
     _rewrite_base_catalog(
-        base, [{"name": "alpha", "targets": ["native", "codex"], "transform": "codex-reduced"}])
+        base, [{"name": "alpha", "targets": ["codex"], "transform": "codex-reduced"}])
     assert _check(ss, base, personal, "personal", tmp_path) == 1
 
 
@@ -66,7 +66,7 @@ def test_check_ignores_source_commit_churn(ss, tmp_path):
     """source_commit records repo HEAD at lock time, so it goes stale on every
     commit. Comparing it would make the lock permanently stale — it must not
     count as drift."""
-    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["native", "codex"])
+    base = make_base_repo(tmp_path, skill_names=["alpha"], targets=["codex"])
     personal = make_personal_repo(tmp_path, skill_names=["pskill"])
     assert _lock(ss, base, personal, "personal", tmp_path) == 0
 

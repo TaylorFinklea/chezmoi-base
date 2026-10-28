@@ -101,9 +101,7 @@ alias cze="chezmoi edit"          # Edit a managed file
 alias czs="chezmoi status"        # Check status
 
 # AI harness shortcuts
-alias c="claude --model opus --effort ultracode --permission-mode auto"
 alias cx="codex"
-alias ccr="claude --resume --model opusplan --effort auto"
 
 # ============================================================================
 # FUNCTIONS
@@ -184,6 +182,3 @@ set -gx LANG en_US.UTF-8
 set -gx LC_ALL en_US.UTF-8
 set -gx EDITOR nvim
 set -gx VISUAL nvim
-
-# Avoid Claude Code's bundled Bun runtime deadlocking on macOS trust enumeration.
-set -gx CLAUDE_CODE_CERT_STORE bundled

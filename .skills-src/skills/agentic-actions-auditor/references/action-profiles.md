@@ -2,51 +2,6 @@
 
 Security-relevant configuration fields, default behaviors, dangerous configuration patterns, and remediation guidance for each supported AI action. Referenced by SKILL.md Step 5 for action-specific remediation.
 
-## Claude Code Action
-
-### Default Security Posture
-
-- Bash tool disabled by default; commands must be explicitly allowed via `--allowedTools` in `claude_args`
-- Only users with repository write access can trigger (default when `allowed_non_write_users` is omitted)
-- GitHub Apps and bots blocked by default (when `allowed_bots` is omitted)
-- Commits to new branch, does NOT auto-create PRs (requires human review)
-- Built-in prompt sanitization strips HTML comments, invisible characters, markdown image alt text, hidden HTML attributes, HTML entities
-- `show_full_output: false` by default (prevents secret leakage in workflow logs)
-
-### Dangerous Configurations
-
-| Configuration | Risk |
-|--------------|------|
-| `claude_args: "--allowedTools Bash(*)"` | Unrestricted shell access; any prompt injection achieves full RCE |
-| `allowed_non_write_users: "*"` | Any GitHub user can trigger the action, including external contributors and attackers |
-| `allowed_bots: "*"` | Any bot can trigger, enables automated attack chains via bot-to-bot escalation |
-| `show_full_output: true` (in public repos) | Exposes full conversation including potential secrets in workflow logs |
-| `prompt` containing `${{ github.event.* }}` | Direct expression injection of attacker-controlled content into AI prompt |
-
-### Remediation Patterns
-
-**Restrict shell access:** Replace `Bash(*)` with specific tool patterns:
-
-```yaml
-claude_args: '--allowedTools "Bash(npm test:*) Bash(git diff:*)"'
-```
-
-**Restrict user access:** Remove wildcard allowlists or replace with explicit user lists:
-
-```yaml
-allowed_non_write_users: "trusted-user1,trusted-user2"
-```
-
-**Restrict bot access:** Remove `allowed_bots: "*"` or list specific trusted bots:
-
-```yaml
-allowed_bots: "dependabot[bot],renovate[bot]"
-```
-
-**Prevent prompt injection:** Never pass attacker-controlled event data (issue body, PR title, comment body) to the `prompt` field via env vars or direct `${{ }}` expressions. Validate and sanitize input in a prior step.
-
-**Protect log output:** Keep `show_full_output: false` (default) in public repositories.
-
 ## OpenAI Codex
 
 ### Default Security Posture
@@ -132,11 +87,11 @@ allow-users: "maintainer1,maintainer2"
 
 ## Per-Action Remediation Quick Reference
 
-| Remediation Need | Claude Code Action | OpenAI Codex | GitHub AI Inference |
-|-----------------|-------------------|--------------|-------------------|
-| Restrict shell access | `--allowedTools "Bash(specific:*)"` | `sandbox: workspace-write` | N/A (no shell) |
-| Restrict user access | `allowed_non_write_users: "user1,user2"` | `allow-users: "user1,user2"` | Control via token scope |
-| Disable dangerous mode | Remove `Bash(*)` from `claude_args` | Remove `danger-full-access` from `sandbox` | N/A |
-| Sandbox enforcement | N/A (tool-level restriction) | `sandbox: read-only` | N/A (no execution) |
-| Block bot triggers | Remove `allowed_bots: "*"` | Set `allow-bots: false` | Control via token scope |
-| Protect output/logs | Keep `show_full_output: false` | N/A | Never `eval` AI output |
+| Remediation Need | OpenAI Codex | GitHub AI Inference |
+|-----------------|--------------|---------------------|
+| Restrict shell access | `sandbox: workspace-write` | N/A (no shell) |
+| Restrict user access | `allow-users: "user1,user2"` | Control via token scope |
+| Disable dangerous mode | Remove `danger-full-access` from `sandbox` | N/A |
+| Sandbox enforcement | `sandbox: read-only` | N/A (no execution) |
+| Block bot triggers | Set `allow-bots: false` | Control via token scope |
+| Protect output/logs | N/A | Never `eval` AI output |

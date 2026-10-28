@@ -85,7 +85,6 @@ Where each supported action receives prompt content that could carry attacker in
 
 | Action | Prompt Fields | Notes |
 |--------|--------------|-------|
-| `anthropics/claude-code-action` | `with.prompt` | Also check `with.claude_args` for embedded instructions |
 | `openai/codex-action` | `with.prompt`, `with.prompt-file` | `prompt-file` may point to attacker-controlled file |
 | `actions/ai-inference` | `with.prompt`, `with.system-prompt`, `with.system-prompt-file` | System prompt is also an injection surface |
 
