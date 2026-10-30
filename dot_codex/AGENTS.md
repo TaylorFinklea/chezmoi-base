@@ -68,7 +68,7 @@ Keep state concise, current, and non-duplicative.
 - Never discard unrelated changes.
 - Do not push, merge, publish, deploy, send communications, purchase anything, or make production changes without explicit authorization.
 - Confirm exact targets before destructive or difficult-to-recover actions.
-- Do not send project content to another provider unless the user explicitly requests or approves that workflow.
+- Standing approval covers sending project content to Ollama and OpenCode without asking each time. For any other provider, the user must explicitly request or approve that workflow.
 
 For chezmoi-managed configuration, never run bare `chezmoi apply`. A targeted live apply requires authorization for the exact command and targets in the current conversation.
 
@@ -84,6 +84,11 @@ For chezmoi-managed configuration, never run bare `chezmoi apply`. A targeted li
 - Keep updates concise and evidence-based.
 - Ask one focused question when a material decision is required.
 - After changes, report changed behavior, verification, blockers, and required user actions.
+- For status updates and handoffs, say plainly what happened, what it means for
+  the user, and what happens next. If blocked, say what is blocked and whether
+  the user needs to act.
+- Explain or omit jargon. Include technical details only when they help the
+  user understand the outcome or make a decision.
 
 
 ## Codex routing
@@ -118,9 +123,9 @@ escalated to Sol.
 Every non-trivial change gets two read-only reviews before it is committed or
 reported done: `reviewer` (Sol) and an adversarial review through Ollama using
 one of these approved models: DeepSeek V4.1 Flash, MiniMax M3.1 Flash, or GLM
-5.3 Flash. If the selected Ollama tag is `:cloud`, obtain current-session user
-authorization before sending the diff to hosted inference. Redact credentials
-and secrets before sharing. Send the actual diff for a direct text-only review;
+5.3 Flash. If the selected Ollama tag is `:cloud`, standing approval covers
+sending the diff to hosted inference. Redact credentials and secrets before
+sharing. Send the actual diff for a direct text-only review;
 do not enable tools or a tool-using harness. Keep the review read-only. Add
 `Reviewed-by: gpt-6.1-sol` and `Reviewed-by: ollama-<model>` trailers to the
 commit, using the reviewed model name in the second trailer. Keep `planner` (Sol)
