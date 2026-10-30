@@ -1,89 +1,35 @@
-# AGENTS.md — chezmoi-base (front door)
+# chezmoi-base front door
 
-This repo is the **entry point for dotfile changes on every machine**. The user
-comes here and describes a change; the agent decides which repo the change
-belongs in and routes it there. Machine-agnostic entry, machine-aware routing.
-This file is repo meta (listed in `.chezmoiignore`), never a managed target.
+This public repository is the entry point for dotfile changes on all machines. This file is repository guidance, listed in `.chezmoiignore`, and is never a managed target.
 
-## Topology
+## Ownership and routing
 
-| Repo | Visibility | Present on | Owns |
-|---|---|---|---|
-| `chezmoi-base` (this) | **public** | all machines | generic, sanitized config only |
-| `~/git/chezmoi-personal` | private | personal Macs only | personal overlay + not-yet-decomposed bulk |
-| `~/git/chezmoi-work` | private (SSH) | work + personal Macs | work-specific targets only |
+| Repository | Machines | Owns |
+|---|---|---|
+| `chezmoi-base` (this repo) | all | Generic, sanitized, public-safe configuration |
+| `~/git/chezmoi-personal` | personal Macs | Personal and private configuration |
+| `~/git/chezmoi-work` | work and personal Macs | Work-specific configuration |
 
-- Composition: base + exactly one overlay per machine. **One target file = one
-  owner repo**; `scripts/chezmoi-compose preflight <personal|work>` enforces
-  disjoint ownership and must pass before committing a routing change.
-- Never clone `chezmoi-personal` on a work machine. Never put secrets,
-  credentials, personal or work identifiers, Hermes content, or private remote
-  URLs in base.
-- On a personal Mac, cross-session handoff state (roadmap, current-state,
-  decisions, phase specs) lives in `../chezmoi-personal/.docs/ai/` — read it at
-  session start. Work-Mac sessions rely on commit messages and this file.
+Composition is base plus exactly one overlay. One rendered target has one owner; `scripts/chezmoi-compose preflight personal` and `preflight work` must both pass before changing ownership.
 
-## Routing a change (decision order)
+On a personal Mac, read `../chezmoi-personal/.docs/ai/current-state.md` first when starting dotfile work. Consult its roadmap or decisions when relevant. Work-Mac sessions rely on recent commits and this guide.
 
-1. **Target already managed?** Edit its current owner. Find it: check each
-   repo's source tree, or `chezmoi managed` per stack.
-2. **New + generic + public-safe + wanted on both machine types** → base.
-   Must pass the safety scanner; templates here may branch on `machine_role`
-   but never `ai_profile` (base composes under both overlays).
-3. **Personal-specific or private** → `chezmoi-personal` (personal Mac only —
-   on a work Mac, say so and defer; do not stage personal content anywhere else).
-4. **Work-specific** → `chezmoi-work`.
-5. **Codex separates shared policy from app state.** Base owns its generic
-   global instructions and native agent definitions. Codex owns `config.toml`,
-   plugins, MCP connections, permissions, and runtime state on each machine;
-   do not copy these into base. Private integration catalogs stay in their
-   overlay and may still supply other harnesses.
+1. Edit an existing target in its current owner. Locate it in source or with `chezmoi managed`.
+2. Put new content in base only when it is generic, safe for a public repository, and wanted on both machine types. Run the public-safety scanner. Base templates may branch on `machine_role`, never `ai_profile`.
+3. Keep personal or private content in `chezmoi-personal`; on a work Mac, defer rather than clone or stage it elsewhere.
+4. Keep work-only content in `chezmoi-work`.
+5. Base owns shared Codex instructions and native agent definitions. `~/.codex/config.toml`, plugins, MCP connections, permissions, and runtime state are app-owned. Overlays may own their Codex hooks, skill sources, and private integration catalogs.
 
-## Reach check — say it before committing
+Never clone the personal repo on a work machine or put secrets, credentials, personal or work identifiers, Hermes content, or private remote URLs in base.
 
-- An edit in **base or work lands on the work machines**. If the request
-  sounded personal, confirm intent with the user first.
-- An edit in **personal never reaches work**. If the user said "everywhere",
-  route to base (if public-safe) or duplicate into work behind a parity test
-  (pattern: `chezmoi-personal/scripts/tests/test_codex_tui_partial_parity.sh`).
-- Pushing base **publishes** — it is a public repo.
+## Reach and ownership changes
 
-## Moving a file between repos
+Base and work changes reach work machines; confirm when a request sounds personal. Personal changes do not reach work. For an “everywhere” request, use safe base ownership or duplicate into work with a parity test. Pushing base publishes its contents.
 
-`git rm` from the old owner, add to the new owner, run preflight for **both**
-roles, run the scanner if base gained content. **Never** add a `.chezmoiremove`
-entry in an overlay for a target now owned by base — it would delete the live
-file on the next overlay apply, and preflight cannot detect that case.
+To move a target, remove it from the old owner and add it to the new owner; preflight both roles and run the scanner if base gains content. Never add an overlay `.chezmoiremove` for a target now owned by base: it deletes the live target and preflight cannot detect it.
 
-## Verify
+## Checks and live application
 
-```bash
-scripts/chezmoi-compose preflight personal   # and: preflight work
-scripts/chezmoi-compose diff personal        # never applies
-python3 scripts/check-public-safety.py       # gate before any base commit/push
-python3 tests/test-public-safety.py          # scanner's own suite
-bash tests/test-compose.sh                   # runner suite
-```
+Use `scripts/chezmoi-compose diff <role>` for a non-applying diff. Before a base commit, run `python3 scripts/check-public-safety.py`, its test suite, and `bash tests/test-compose.sh`; run both profile preflights for ownership changes. Cross-overlay parity tests live in the personal repo and run on the personal Mac.
 
-Cross-overlay parity tests live in `chezmoi-personal/scripts/tests/` and run on
-the personal Mac only.
-
-## Apply
-
-Routine convergence runs through `scripts/chezmoi-compose sync` (shim:
-`chezmoi-sync`; scheduled daily via launchd). Non-interactive runs apply
-*clean* drift only — a file changed on both sides is never auto-resolved; it
-is reported, notified, and waits for an interactive `chezmoi-sync` where the
-user picks overwrite / import / skip. Targeted repair:
-`chezmoi-compose apply <role> <target>...`.
-
-An interactive agent session may run `scripts/chezmoi-compose sync` or a
-targeted composed apply only when the user explicitly authorizes that exact
-operation in the current conversation. The agent restates command and scope,
-does not broaden targets, and leaves every conflict choice to the user.
-Authorization expires after that operation or when the conversation ends.
-Bare `chezmoi apply`, headless applies, unattended conflict resolution,
-and unapproved `--force` remain forbidden.
-
-Expected perpetual drift (skip-listed by sync): `.codex/config.toml` is
-runtime-rewritten by the app; anything beyond that file is real.
+Routine convergence uses `scripts/chezmoi-compose sync` (`chezmoi-sync`). It applies clean drift only and reports conflicts for the user to resolve. `.codex/config.toml` is app-rewritten and skip-listed as expected drift; do not import or reconcile it as chezmoi state. A live interactive sync or targeted `scripts/chezmoi-compose apply <role> <target>...` requires current-conversation authorization for that exact command and scope. Restate the command and scope before running; authorization covers one operation and expires when it completes or the conversation ends. Do not broaden targets or choose conflicts. Bare `chezmoi apply`, headless apply, unattended conflict resolution, and unapproved `--force` are forbidden.
