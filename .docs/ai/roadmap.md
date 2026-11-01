@@ -1,6 +1,7 @@
 # Roadmap
 
-> Durable goals and milestones. Updated when scope changes, not every session.
+> Canonical status for project tasks and milestones. Update when assignments,
+> scope, blockers, or completion change; do not write a per-session diary.
 
 ## Vision
 
@@ -11,36 +12,47 @@ the front door for all dotfile changes on any machine.
 
 ### Now
 
-- [x] **Herdr Ask OMP backend — retired 2026-10-01** with herdr and
-      herdr-ask everywhere; superseded, no apply needed. Original note
-      (2026-08-01): Base now renders a safe custom-process `omp` backend with
-      sessions, tools, LSP, PTY execution, extensions, skills, and rules
-      disabled; `pi` remains the default. Personal preflight and released
-      Herdr Ask 0.1.0 validation pass. User to run the targeted composed apply
-      for `~/Library/Application Support/herdr-ask/config.toml`, then
-      `herdr-ask doctor omp`. Work-profile preflight remains unverified on this
-      Mac because `~/git/chezmoi-work` is absent.
-
-- [ ] **Decide whether to `skillsync migrate` the 91 unmanaged codex/pi/hermes
-      skills.** They work today but skillsync doesn't own them, so they drift
-      silently and `sync` will never update them. `migrate` adopts only entries
-      whose `tree_hash` already matches the composed output and refuses the rest,
-      so it is non-destructive — but the refusals then need hand-reconciling.
-      Verify: `skillsync diff …` reports 0 unmanaged.
+- None active.
 
 ### Next
 
-- [ ]
+- None queued.
 
 ### Later
 
-- [ ]
+- None queued.
+
+## Completed
+
+- [x] **2026-10-31: Clarify lead-owned Markdown task state and handoffs.**
+      Shared guidance, owner-repository routing, and base tracking docs now
+      define one status record, meaningful updates, and authorized task
+      selection. Required source checks and independent Sol plus direct
+      DeepSeek reviews passed. Source-only; no live apply.
 
 ## Backlog
 
-> Self-contained items any agent can execute. Each entry should include scope, file paths, acceptance criteria, verification steps, a `tier_floor` (`lead`/`senior`/`junior` — gates ownership), and a `complexity` (`S`/`M`/`L`/`XL`). See Tiered model routing in AGENTS.md.
+> Capture enough scope and completion detail to make a nontrivial item
+> actionable. Add owners, dependencies, and verification steps when useful;
+> there is no mandatory tier or complexity taxonomy. An item is not permission
+> to start: the lead assigns work within the user's approved scope.
+
+### Historical carryover (not scheduled)
+
+Old Herdr/OMP and skillsync notes are historical context only, not active work.
+Revalidate against current source and obtain a lead assignment before
+rescheduling or acting on them.
+
+- Herdr Ask OMP was recorded as retired on 2026-10-01; prior apply and
+  work-profile notes are stale and require revalidation.
+- An older note proposed adopting 91 unmanaged codex/pi/hermes skills with
+  skillsync. Its status and assumptions are stale and require revalidation.
 
 ## Constraints
 
-- Applying to live HOME is human-only; headless iterations never apply.
+- A live interactive composed sync or targeted apply requires authorization in
+  the current conversation for the exact command and targets; that authorization
+  expires when the operation completes or the conversation ends. Bare
+  `chezmoi apply`, headless apply, unattended conflict resolution, and
+  unapproved `--force` are forbidden.
 - Changes here propagate to the work machine too — verify reach before landing.

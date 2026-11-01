@@ -12,7 +12,7 @@ This public repository is the entry point for dotfile changes on all machines. T
 
 Composition is base plus exactly one overlay. One rendered target has one owner; `scripts/chezmoi-compose preflight personal` and `preflight work` must both pass before changing ownership.
 
-On a personal Mac, read `../chezmoi-personal/.docs/ai/current-state.md` first when starting dotfile work. Consult its roadmap or decisions when relevant. Work-Mac sessions rely on recent commits and this guide.
+On a personal Mac, read `../chezmoi-personal/.docs/ai/current-state.md` first for personal overlay context when starting dotfile work. Consult its roadmap or decisions when relevant. Record task status in the owning repository's docs; do not copy private personal context into base. Work-Mac sessions rely on recent commits and this guide, plus the owning repository's docs when available.
 
 1. Edit an existing target in its current owner. Locate it in source or with `chezmoi managed`.
 2. Put new content in base only when it is generic, safe for a public repository, and wanted on both machine types. Run the public-safety scanner. Base templates may branch on `machine_role`, never `ai_profile`.

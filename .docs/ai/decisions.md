@@ -52,6 +52,11 @@ public plugin repositories used by the base external manifest.
 
 ## [2026-10-14] Codex uses only Luna and Sol, with local adversarial review
 
+**Status (2026-10-31)**: The blanket review requirement below is superseded by
+the current conditional independent-review policy in `dot_codex/AGENTS.md`.
+This entry remains as historical rationale; current reviewer and model routing
+rules are authoritative.
+
 Codex routing uses only Luna 6 and Sol 6.1. Luna implements and explores;
 `worker_sol` replaces `worker_terra` as the escalation after a failed Luna
 attempt, and `reviewer` runs Sol. Terra is never used, and Astra only when the
@@ -62,3 +67,18 @@ review using a locally available Ollama model: DeepSeek V4.1 Flash, MiniMax M3.1
 Flash, or GLM 5.3 Flash. Reviewed commits carry `Reviewed-by:` trailers for both
 reviews. Overlays list the two retired agent files in `.chezmoiremove` so
 composed applies delete them on both machines.
+
+## [2026-10-31] Markdown is the shared task and handoff record
+
+**Context**: The shared workflow needs durable task status and clear handoffs
+without maintaining a second task database or duplicating native Goal state.
+
+**Decision**: Where the three-file pattern applies, the roadmap owns task and
+milestone status; current state is a compact entry point and handoff; decisions
+record durable rationale and dated supersession. The lead assigns work and
+maintains status, workers report results and blockers, and status changes are
+recorded at meaningful transitions. A roadmap item never authorizes work.
+
+**Rationale**: Plain Markdown fits the existing repositories and remains easy to
+review and edit. Keep the contract lean: no mandatory task taxonomy, per-turn
+diary, or duplicate native Goal lifecycle.

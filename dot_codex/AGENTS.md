@@ -32,7 +32,29 @@ Material behavior or configuration changes receive an independent read-only Sol 
 
 Do not create goals for conversation, trivial edits, or planning-only work. For substantive work, the lead creates a native goal for exactly that approved outcome or reuses a matching active goal. Do not infer broader scope or milestones, alter unrelated or paused goals, reset usage or budgets, or set a token budget without request. Workers and reviewers do not own goals. If goal tools are unavailable, report that; add no substitute hooks or loops. Follow the native lifecycle for paused, blocked, resumed, and completed goals; do not invent statuses. Complete only after relevant checks pass and required reviews are resolved.
 
-Where `.docs/ai/` exists, keep `current-state.md` compact and current, `roadmap.md` for current or future milestones, and `decisions.md` for durable rationale. Do not repeat detailed history across them. Start with current state and consult the others when relevant.
+## Markdown task state
+
+Follow the repository's existing task tracking. Where `.docs/ai/` follows this
+three-file pattern, `roadmap.md` is the canonical list and status of project
+work; `current-state.md` is the entry point and handoff, with references to active
+work, the exact next action, and only relevant blockers, decisions, and concise
+verification evidence. It is not a second task-status ledger. `decisions.md`
+records durable rationale and dates when a decision is superseded. These files
+are conventions, not a requirement to add artifacts to every repository.
+
+The lead assigns work, maintains shared status, and integrates worker reports.
+Workers report results and blockers to the lead rather than maintaining a
+competing status ledger. Read the current state at start and resume, then
+revalidate it against current source. Update meaningful assignment, scope,
+blocker, completion, and handoff changes; do not write a per-turn diary. Add
+identifiers, dependencies, observable completion criteria, and verification
+steps when they help manage nontrivial work. A roadmap item or empty plan never
+authorizes work; follow the user's approved scope and repository rules.
+
+Native Goals track an approved outcome and its thread lifecycle. Keep that
+lifecycle separate from project handoff; link to a Goal from Markdown only when
+useful, without duplicating its controls or history. Keep status files compact
+and avoid repeating detailed history.
 
 ## Communication
 
