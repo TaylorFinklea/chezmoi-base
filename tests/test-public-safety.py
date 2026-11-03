@@ -74,7 +74,91 @@ def scan_output_from_root(root):
     return result.returncode, result.stdout
 
 
+def init_git_repo(root, exclude=""):
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    if exclude:
+        (root / ".git" / "info" / "exclude").write_text(exclude)
+
+
+def unsafe_git_remote():
+    return "remote = " + https_url("example.invalid/fixture.git")
+
+
 class PublicSafetyScannerTests(unittest.TestCase):
+    def test_skips_only_ignored_untracked_root_beads_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_git_repo(root, ".beads/\n.private-note\n")
+            beads = root / ".beads"
+            beads.mkdir()
+            (beads / "README.md").write_text(unsafe_git_remote())
+            (root / ".private-note").write_text(unsafe_git_remote())
+
+            code, output = scan_output_from_root(root)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(output, ".private-note: git-remote\n")
+
+    def test_scans_force_staged_ignored_root_beads_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_git_repo(root, ".beads/\n")
+            beads = root / ".beads"
+            beads.mkdir()
+            (beads / "README.md").write_text(unsafe_git_remote())
+            subprocess.run(
+                ["git", "add", "-f", ".beads/README.md"], cwd=root, check=True
+            )
+
+            code, output = scan_output_from_root(root)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(output, ".beads/README.md: git-remote\n")
+
+    def test_scans_unignored_beads_and_non_git_fixture_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_git_repo(root)
+            beads = root / ".beads"
+            beads.mkdir()
+            (beads / "README.md").write_text(unsafe_git_remote())
+            code, output = scan_output_from_root(root)
+            self.assertEqual(code, 1)
+            self.assertEqual(output, ".beads/README.md: git-remote\n")
+
+        self.assertNotEqual(run_scan({".beads/README.md": unsafe_git_remote()}), 0)
+
+    def test_rejects_symlink_in_ignored_root_beads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_git_repo(root, ".beads/\n")
+            outside = root / "outside.txt"
+            outside.write_text("safe fixture")
+            beads = root / ".beads"
+            beads.mkdir()
+            (beads / "link").symlink_to(outside)
+
+            code, output = scan_output_from_root(root)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(output, ".beads/link: symlink\n")
+
+    def test_git_query_failure_scans_ignored_beads_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init_git_repo(root, ".beads/\n")
+            beads = root / ".beads"
+            beads.mkdir()
+            (beads / "README.md").write_text(unsafe_git_remote())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), mock.patch.object(
+                SCANNER.subprocess, "run", side_effect=FileNotFoundError
+            ):
+                code = SCANNER.scan(root)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(output.getvalue(), ".beads/README.md: git-remote\n")
+
     def test_accepts_generic_public_identity(self):
         self.assertEqual(run_scan({"dot_gitconfig": "[user]\nname = Generic\n"}), 0)
     def test_ignores_git_worktree_pointer_file(self):

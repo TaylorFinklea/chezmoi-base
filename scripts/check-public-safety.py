@@ -4,6 +4,7 @@ import os
 import posixpath
 import re
 import stat
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
@@ -229,6 +230,78 @@ def text_rules(contents):
     return rules
 
 
+def ignored_untracked_root_beads_files(root):
+    """Return ignored, untracked files under a repository-root .beads directory.
+
+    Local Beads stores are deliberately kept out of source control. Only omit
+    these exact ignored paths when scanning the Git worktree root; non-Git and
+    nested scan roots retain the normal full-tree scan. Tracked or force-staged
+    files are not returned by `git ls-files --others` and remain scan targets.
+    """
+    env = os.environ.copy()
+    for name in (
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_INDEX_FILE",
+        "GIT_PREFIX",
+        "GIT_WORK_TREE",
+    ):
+        env.pop(name, None)
+
+    try:
+        top_level = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            env=env,
+        )
+    except OSError:
+        return set()
+    if top_level.returncode != 0:
+        return set()
+    try:
+        if Path(os.fsdecode(top_level.stdout).strip()).resolve() != root.resolve():
+            return set()
+    except (OSError, ValueError):
+        return set()
+
+    try:
+        ignored = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+                "--",
+                ":(top,literal).beads",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            env=env,
+        )
+    except OSError:
+        return set()
+    if ignored.returncode != 0:
+        return set()
+
+    paths = set()
+    for raw_path in ignored.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative_path = Path(os.fsdecode(raw_path))
+        if relative_path.parts and relative_path.parts[0] == ".beads":
+            paths.add(relative_path)
+    return paths
+
+
 def scan(root):
     violations = set()
     try:
@@ -242,6 +315,7 @@ def scan(root):
     if not stat.S_ISDIR(root_mode):
         print(".: unreadable-root")
         return 1
+    ignored_beads_files = ignored_untracked_root_beads_files(root)
 
     def record_walk_error(error):
         filename = getattr(error, "filename", None)
@@ -345,6 +419,8 @@ def scan(root):
                 violations.add((str(relative_path), "unreadable-path"))
                 continue
             if path.resolve() == SCRIPT_PATH:
+                continue
+            if relative_path in ignored_beads_files:
                 continue
 
             rules = path_rules(relative_path)

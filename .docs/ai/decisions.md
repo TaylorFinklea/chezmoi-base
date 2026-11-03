@@ -114,3 +114,9 @@ not prevent initialization from inferring a Dolt remote from Git origin. Use
 `BD_DOLT_LOCAL_ONLY=true` for initialization, persist `dolt.local-only` afterward,
 and verify no remote was configured. Test with a Git-origin fixture rather than
 only repositories without remotes.
+
+**Scanner integration**: Local Beads state is outside published source only
+when Git confirms it is both ignored and untracked. Limit that exception to
+the project-root `.beads` directory; continue scanning tracked, staged, or
+unignored Beads files and all other ignored source files. Retain symlink
+rejection and full scanning when Git cannot establish the boundary.

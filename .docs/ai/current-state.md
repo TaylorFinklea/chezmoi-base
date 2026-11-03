@@ -9,16 +9,15 @@
 Actionable follow-up and verification are tracked in local Beads issue
 `chezmoi-base-iil`; do not copy its task status into this document.
 
-**Next action:** Obtain fresh exact-command approval for the local-only
-bootstrap correction's activation and publication. Work-machine activation and
-runtime verification must occur on
-that machine; do not apply its overlay to personal HOME.
+**Resume:** Read that issue for the current next action, exact pending rollout
+operations, authorization state, and verification receipts. Revalidate current
+source and live targets before any authorized operation. Work-machine
+activation and runtime verification must occur on that machine; do not apply
+its overlay to personal HOME.
 
 ## Blockers
 
 - Work-machine runtime cannot be qualified by local source checks.
-- Prior apply and push approvals were consumed by their successful operations;
-  they do not authorize another activation or publication.
 
 ## Evidence and limits
 
@@ -39,6 +38,10 @@ that machine; do not apply its overlay to personal HOME.
   and contributor-role checks, policy parity, shell syntax, and diff hygiene.
   The compose suite and 53 public-safety tests passed; the public scanner passed
   on a source snapshot excluding the ignored local task database.
+- A subsequent authorized apply stopped at the scanner before changing either
+  target: the live checkout's ignored local Beads database was being scanned.
+  Scanner integration must preserve checks on every tracked or staged file;
+  current resolution and rollout evidence belong to the issue above.
 
 Keep this file as a compact entry point and handoff. The roadmap retains project
 direction and milestone references; Beads owns actionable tasks. Native Goals

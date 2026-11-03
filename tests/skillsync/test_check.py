@@ -1,5 +1,6 @@
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 from .conftest import make_base_repo, make_personal_repo, make_work_repo, write_catalog_toml
@@ -134,4 +135,23 @@ def test_check_hands_off_to_public_safety_scanner(ss, tmp_path):
     fake_token = "gh" + "p_" + ("x" * 24)
     skill_md = base / ".skills-src" / "skills" / "alpha" / "SKILL.md"
     skill_md.write_text(skill_md.read_text() + "\n" + fake_token + "\n")
+    assert _check(ss, base, personal, "personal", tmp_path) == 2
+
+
+def test_check_handoff_skips_only_ignored_beads_store(ss, tmp_path):
+    base = make_base_repo(tmp_path, skill_names=["alpha"])
+    personal = make_personal_repo(tmp_path, skill_names=["pskill"])
+    scanner_src = Path(__file__).resolve().parents[2] / "scripts" / "check-public-safety.py"
+    (base / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(scanner_src, base / "scripts" / "check-public-safety.py")
+    subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+    (base / ".git" / "info" / "exclude").write_text(".beads/\n")
+
+    beads_file = base / ".beads" / "README.md"
+    beads_file.parent.mkdir()
+    beads_file.write_text("remote = " + "https" + "://example.invalid/fixture.git")
+    assert _lock(ss, base, personal, "personal", tmp_path) == 0
+    assert _check(ss, base, personal, "personal", tmp_path) == 0
+
+    subprocess.run(["git", "add", "-f", ".beads/README.md"], cwd=base, check=True)
     assert _check(ss, base, personal, "personal", tmp_path) == 2
