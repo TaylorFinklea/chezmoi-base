@@ -70,6 +70,9 @@ composed applies delete them on both machines.
 
 ## [2026-10-31] Markdown is the shared task and handoff record
 
+**Status (2026-11-03)**: The task-status ownership below is superseded by the
+Beads-default decision. Markdown handoff and rationale remain in use.
+
 **Context**: The shared workflow needs durable task status and clear handoffs
 without maintaining a second task database or duplicating native Goal state.
 
@@ -82,3 +85,26 @@ recorded at meaningful transitions. A roadmap item never authorizes work.
 **Rationale**: Plain Markdown fits the existing repositories and remains easy to
 review and edit. Keep the contract lean: no mandatory task taxonomy, per-turn
 diary, or duplicate native Goal lifecycle.
+
+## [2026-11-03] Beads is the default project tracker in both machine profiles
+
+**Decision**: Codex and OpenCode use Beads by default for actionable project
+tasks, dependencies, and status. The lead assigns and updates work; workers
+report results and blockers. Readiness is not authorization, and completion
+requires the applicable verification and reviews.
+
+Each project keeps its own local embedded Dolt store. Personal and work stores
+remain separate, with no global task database, shared server, inferred remote,
+or automatic remote sync. New stores are initialized only for approved coding
+work in a resolved writable project; existing stores, tracker conflicts, and
+historical exports are reconciled rather than overwritten or auto-imported.
+
+Markdown roadmaps retain direction and milestone references, current state
+retains the exact next action and concise handoff, and decisions retain durable
+rationale. Link Beads IDs without maintaining a second actionable status ledger.
+Native Goals continue to own approved thread outcomes and lifecycle.
+
+**Scope**: Shared instruction and profile provisioning sources, isolated
+functional verification, and reviewed commits. Live managed-target activation,
+publishing, remote backend setup, and bulk initialization remain separate
+operations under the repository's authorization rules.

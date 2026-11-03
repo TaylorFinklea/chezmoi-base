@@ -32,15 +32,15 @@ Material behavior or configuration changes receive an independent read-only Sol 
 
 Do not create goals for conversation, trivial edits, or planning-only work. For substantive work, the lead creates a native goal for exactly that approved outcome or reuses a matching active goal. Do not infer broader scope or milestones, alter unrelated or paused goals, reset usage or budgets, or set a token budget without request. Workers and reviewers do not own goals. If goal tools are unavailable, report that; add no substitute hooks or loops. Follow the native lifecycle for paused, blocked, resumed, and completed goals; do not invent statuses. Complete only after relevant checks pass and required reviews are resolved.
 
-## Markdown task state
+## Markdown project handoff
 
-Follow the repository's existing task tracking. Where `.docs/ai/` follows this
-three-file pattern, `roadmap.md` is the canonical list and status of project
-work; `current-state.md` is the entry point and handoff, with references to active
-work, the exact next action, and only relevant blockers, decisions, and concise
-verification evidence. It is not a second task-status ledger. `decisions.md`
-records durable rationale and dates when a decision is superseded. These files
-are conventions, not a requirement to add artifacts to every repository.
+Use repository Markdown for roadmap direction, milestones, rationale, and
+resume/handoff context. Where `.docs/ai/` follows the three-file pattern,
+`roadmap.md` holds direction and milestones, `current-state.md` is the concise
+handoff entry point, and `decisions.md` records durable rationale. Put pointers
+to actionable work in Beads; do not maintain a duplicate Markdown issue-status
+ledger. These files are conventions, not a requirement to add artifacts to
+every repository.
 
 The lead assigns work, maintains shared status, and integrates worker reports.
 Workers report results and blockers to the lead rather than maintaining a
@@ -51,10 +51,56 @@ identifiers, dependencies, observable completion criteria, and verification
 steps when they help manage nontrivial work. A roadmap item or empty plan never
 authorizes work; follow the user's approved scope and repository rules.
 
-Native Goals track an approved outcome and its thread lifecycle. Keep that
-lifecycle separate from project handoff; link to a Goal from Markdown only when
-useful, without duplicating its controls or history. Keep status files compact
-and avoid repeating detailed history.
+Where supported, native Goals track an approved outcome and its thread
+lifecycle. Keep that lifecycle separate from project handoff; link to a Goal
+from Markdown only when useful, without duplicating its controls or history.
+Keep status files compact and avoid repeating detailed history.
+
+## Beads project task tracking
+
+Use Beads (`bd`) by default for actionable issues, dependencies, ownership, and
+status in every coding project, in both harnesses. There is no opt-in
+step. Where supported, native Goals remain the approved outcome and thread
+lifecycle; transient todos remain execution steps. The lead creates or claims
+issues, assigns and updates them, and workers report progress and evidence to
+the lead. A ready issue does not authorize work; follow the user's requested
+scope and approval boundaries. Close issues only when their required evidence
+and reviews are complete.
+
+At the start of substantive project work, resume, and after compaction, resolve
+the actual project/workspace root and confirm it is writable. Inspect the
+project and its ancestors for `.beads` state, tracker configuration, relevant
+environment redirection, and linked worktree relationships before writes. A
+read-only `bd --sandbox where` probe is allowed to inspect the selected store.
+Do not write while its location or ownership is uncertain. Reject
+ancestor, neighboring-project, global, or cross-project stores. A linked
+worktree may use the same project's existing store only when that relationship
+and store are verified. Never set `BEADS_DIR` or use `bd --global`.
+
+Do not initialize Beads for questions, read-only exploration, `$HOME`, or a
+directory that is not an identified writable project. If no Beads store or
+other project-specific tracker exists and the probe does not resolve to another
+store, initialize the local embedded Dolt store from the project's working
+directory:
+
+```sh
+bd init --skip-agents --skip-hooks --role contributor --non-interactive --sandbox
+```
+
+Preserve existing data. Never force-init, overwrite, or automatically import
+an archive; ask the user if another tracker or existing state creates a
+conflict. On every substantive start, resume, and after compaction, whether the
+store already existed or was just initialized, run `bd --sandbox where` from
+the project root to verify the selected project-local store, then run
+`bd --sandbox prime` at that verified root.
+
+Pass Beads' `--sandbox` global flag on every project command (for example,
+`bd --sandbox list`) to disable Dolt auto-push. Each project keeps its own local
+embedded Dolt database. Never use a central home-directory queue, personal/work
+shared store, or server; never configure or infer a remote from Git remotes or
+run automatic data sync, push, or pull. Use any remote operation only when the
+user explicitly requests and approves that exact operation. Personal and work
+projects remain separate. Do not bulk-initialize checkouts.
 
 ## Communication
 

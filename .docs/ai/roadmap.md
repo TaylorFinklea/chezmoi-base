@@ -1,7 +1,8 @@
 # Roadmap
 
-> Canonical status for project tasks and milestones. Update when assignments,
-> scope, blockers, or completion change; do not write a per-session diary.
+> Project direction and milestone status. Beads owns actionable tasks and
+> dependencies after activation; link issue IDs rather than duplicating their
+> status. A roadmap item never authorizes work.
 
 ## Vision
 
@@ -12,7 +13,15 @@ the front door for all dotfile changes on any machine.
 
 ### Now
 
-- None active.
+- [ ] **BEADS-DEFAULT — Default Beads integration for both machine profiles.**
+      Approved 2026-11-03. Shared Codex/OpenCode guidance and profile provisioning
+      are implemented; isolated checks and independent reviews passed. Next:
+      scoped commits and exact-target personal activation; work-machine rollout
+      remains separate. Acceptance:
+      separate per-project stores, no personal/work queue sharing or automatic
+      remote sync, isolated functional checks, profile composition checks,
+      independent reviews, and scoped source commits. Live activation requires
+      separately authorized exact commands and targets.
 
 ### Next
 
