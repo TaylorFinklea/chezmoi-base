@@ -26,8 +26,17 @@ store, initialize the local embedded Dolt store from the project's working
 directory:
 
 ```sh
-bd init --skip-agents --skip-hooks --role contributor --non-interactive --sandbox
+BD_DOLT_LOCAL_ONLY=true bd init --skip-agents --skip-hooks --role contributor --non-interactive --sandbox
+bd --sandbox config set dolt.local-only true
+bd --sandbox dolt remote list
 ```
+
+The environment setting is required during initialization: installed Beads
+versions may infer a Dolt sync remote from the Git `origin` even with
+`--sandbox`. Persist `dolt.local-only=true` for later commands and verify the
+remote list is empty. If any command fails, initialization reports a
+configuration failure, or any remote is listed, stop and resolve the store
+before continuing.
 
 Preserve existing data. Never force-init, overwrite, or automatically import
 an archive; ask the user if another tracker or existing state creates a

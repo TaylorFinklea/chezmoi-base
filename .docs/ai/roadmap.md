@@ -15,9 +15,9 @@ the front door for all dotfile changes on any machine.
 
 - [ ] **BEADS-DEFAULT — Default Beads integration for both machine profiles.**
       Approved 2026-11-03. Shared Codex/OpenCode guidance and profile provisioning
-      are implemented; isolated checks and independent reviews passed. Next:
-      scoped commits and exact-target personal activation; work-machine rollout
-      remains separate. Acceptance:
+      are implemented; personal activation and base/work publication succeeded.
+      Bootstrap follow-up is tracked in Beads `chezmoi-base-iil`; work-machine
+      runtime remains unverified. Acceptance:
       separate per-project stores, no personal/work queue sharing or automatic
       remote sync, isolated functional checks, profile composition checks,
       independent reviews, and scoped source commits. Live activation requires

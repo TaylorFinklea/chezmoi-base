@@ -108,3 +108,9 @@ Native Goals continue to own approved thread outcomes and lifecycle.
 functional verification, and reviewed commits. Live managed-target activation,
 publishing, remote backend setup, and bulk initialization remain separate
 operations under the repository's authorization rules.
+
+**Bootstrap correction**: Beads 1.2.2's `--sandbox` disables auto-push but does
+not prevent initialization from inferring a Dolt remote from Git origin. Use
+`BD_DOLT_LOCAL_ONLY=true` for initialization, persist `dolt.local-only` afterward,
+and verify no remote was configured. Test with a Git-origin fixture rather than
+only repositories without remotes.
