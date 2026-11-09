@@ -53,7 +53,7 @@ public plugin repositories used by the base external manifest.
 ## [2026-10-14] Codex uses only Luna and Sol, with local adversarial review
 
 **Status (2026-10-31)**: The blanket review requirement below is superseded by
-the current conditional independent-review policy in `dot_codex/AGENTS.md`.
+the current machine-role-specific policy in `dot_codex/AGENTS.md.tmpl`.
 This entry remains as historical rationale; current reviewer and model routing
 rules are authoritative.
 
