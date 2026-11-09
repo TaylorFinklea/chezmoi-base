@@ -6,14 +6,15 @@
 ## Active work
 
 [BEADS-DEFAULT](roadmap.md#now) uses separate per-project personal/work stores.
-Current Codex review-policy verification is tracked in `chezmoi-base-i2b` and
-`chezmoi-personal-in6`; verification receipts and review/activation status live
-in those issues.
+Codex review-policy source verification is tracked in `chezmoi-base-i2b` and
+`chezmoi-personal-in6`. Current activation and publication receipts, remaining
+scope decisions, and rollout status live in `chezmoi-base-8s0`.
 
-**Resume:** Revalidate current sources before rollout. The role template and
-personal review-skill changes remain source-only; no live apply or skillsync
-materialization has run for this update. Work activation and runtime must be
-verified on that machine, never by applying its overlay to personal HOME.
+**Resume:** Read the rollout issue before another live operation; prior
+exact-target apply approval is consumed when that operation finishes.
+Revalidate current sources and live targets before any newly authorized
+rollout. Work activation and runtime must be verified on that machine,
+never by applying its overlay to personal HOME.
 
 ## Blockers
 
