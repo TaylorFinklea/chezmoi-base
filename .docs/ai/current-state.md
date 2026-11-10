@@ -1,19 +1,20 @@
 # Current State
 
 **Branch:** `main`
-**Updated:** 2026-11-03
+**Updated:** 2026-11-09
 
 ## Active work
 
 [BEADS-DEFAULT](roadmap.md#now) uses separate per-project personal/work stores.
-Actionable follow-up and verification are tracked in local Beads issue
-`chezmoi-base-iil`; do not copy its task status into this document.
+Codex review-policy source verification is tracked in `chezmoi-base-i2b` and
+`chezmoi-personal-in6`. Current activation and publication receipts, remaining
+scope decisions, and rollout status live in `chezmoi-base-8s0`.
 
-**Resume:** Read that issue for the current next action, exact pending rollout
-operations, authorization state, and verification receipts. Revalidate current
-source and live targets before any authorized operation. Work-machine
-activation and runtime verification must occur on that machine; do not apply
-its overlay to personal HOME.
+**Resume:** Read the rollout issue before another live operation; prior
+exact-target apply approval is consumed when that operation finishes.
+Revalidate current sources and live targets before any newly authorized
+rollout. Work activation and runtime must be verified on that machine,
+never by applying its overlay to personal HOME.
 
 ## Blockers
 

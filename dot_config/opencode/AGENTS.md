@@ -1,3 +1,7 @@
+## Adversarial reviews
+
+The owner grants standing authorization for read-only adversarial reviews through Ollama and OpenCode across all repositories, including private repositories. Review agents have Codex-equivalent repository access and may use its tools for read-only inspection; do not ask for per-review or per-repository permission, or require packet scrubbing. Keep reviews read-only unless a separate task authorizes edits. Other providers still require explicit approval. Never print, log, commit, or place credentials in command arguments.
+
 # Beads project task tracking
 
 Use Beads (`bd`) by default for actionable issues, dependencies, ownership, and
